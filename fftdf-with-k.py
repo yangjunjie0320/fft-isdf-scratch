@@ -210,51 +210,53 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0):
     # from pyscf.lib import prange
     # blkszie = 8
 
+    from pyscf.pbc.lib.kpts_helper import get_kconserv
     from pyscf.pbc.lib.kpts_helper import get_kconserv_ria
     kconserv2 = get_kconserv_ria(c, vk)
+    kconserv3 = get_kconserv(c, vk)
 
-    for k1, vk1 in enumerate(vk):
-        for k2, vk2 in enumerate(vk):
-            q = kconserv2[k1, k2]
-            vq = vk[q]
-            vk12 = vk2 - vk1
-            err = abs(vq - vk12).max()
-            assert err < 1e-10, f"vq = {vq}, vk12 = {vk12}, err = {err}"
+    # for k1, vk1 in enumerate(vk):
+    #     for k2, vk2 in enumerate(vk):
+    #         q = kconserv2[k1, k2]
+    #         vq = vk[q]
+    #         vk12 = vk2 - vk1
+    #         err = abs(vq - vk12).max()
+    #         assert err < 1e-10, f"vq = {vq}, vk12 = {vk12}, err = {err}"
 
-            zq = fswp["z"][q, :, :].T
-            rho_sol = einsum("Ig,Im,In->gmn", zq, x_k[k1].conj(), x_k[k2])
+    #         zq = fswp["z"][q, :, :].T
+    #         rho_sol = einsum("Ig,Im,In->gmn", zq, x_k[k1].conj(), x_k[k2])
 
-            phi_k1 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk1)
-            phi_k2 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk2)
-            rho_ref = einsum("gm,gn->gmn", phi_k1.conj(), phi_k2)
+    #         phi_k1 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk1)
+    #         phi_k2 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk2)
+    #         rho_ref = einsum("gm,gn->gmn", phi_k1.conj(), phi_k2)
 
-            eri = abs(rho_sol - rho_ref).max()
-            print(f"{k1 = :2d}, {k2 = :2d}, {q = :2d} {eri = :6.2e}")
+    #         eri = abs(rho_sol - rho_ref).max()
+    #         print(f"{k1 = :2d}, {k2 = :2d}, {q = :2d} {eri = :6.2e}")
 
-    coul_k = []
-    gv = c.get_Gv(mesh)
+    # coul_k = []
+    # gv = c.get_Gv(mesh)
 
-    for q, vq in enumerate(vk):
-        phase = numpy.exp(-1j * numpy.dot(coord, vq))
-        assert phase.shape == (ngrid, )
+    # for q, vq in enumerate(vk):
+    #     phase = numpy.exp(-1j * numpy.dot(coord, vq))
+    #     assert phase.shape == (ngrid, )
 
-        coulg_k = pbctools.get_coulG(c, k=vq, mesh=mesh, Gv=gv) * c.vol / ngrid
-        assert coulg_k.shape == (ngrid, )
+    #     coulg_k = pbctools.get_coulG(c, k=vq, mesh=mesh, Gv=gv) * c.vol / ngrid
+    #     assert coulg_k.shape == (ngrid, )
 
-        z_k = fswp["z_k"][q, :, :].T * phase
-        assert z_k.shape == (nip, ngrid)
+    #     z_k = fswp["z_k"][q, :, :].T * phase
+    #     assert z_k.shape == (nip, ngrid)
 
-        zeta_g = pbctools.fft(z_k, mesh) * coulg_k
-        assert zeta_g.shape == (nip, ngrid)
+    #     zeta_g = pbctools.fft(z_k, mesh) * coulg_k
+    #     assert zeta_g.shape == (nip, ngrid)
 
-        zeta_k = pbctools.ifft(zeta_g, mesh)
-        zeta_k *= phase.conj()
+    #     zeta_k = pbctools.ifft(zeta_g, mesh)
+    #     zeta_k *= phase.conj()
 
-        coul_k.append(einsum("Ig,Jg->IJ", zeta_k, z_k))
+    #     coul_k.append(einsum("Ig,Jg->IJ", zeta_k, z_k))
 
-    coul_k = numpy.asarray(coul_k)
-    assert coul_k.shape == (nkpt, nip, nip)
-    return coul_k, x_k
+    # coul_k = numpy.asarray(coul_k)
+    # assert coul_k.shape == (nkpt, nip, nip)
+    # return coul_k, x_k
 
 if __name__ == "__main__":
     cell   = pyscf.pbc.gto.Cell()
