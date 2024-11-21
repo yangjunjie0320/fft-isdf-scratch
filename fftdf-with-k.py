@@ -157,7 +157,7 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
     from pyscf.lib import H5TmpFile
     fswp = H5TmpFile()
     fswp.create_dataset("z", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
-    z = numpy.empty((nkpt, ngrid, nip), dtype=numpy.complex128)
+    # z = numpy.empty((nkpt, ngrid, nip), dtype=numpy.complex128)
     
     # for ao_ks_etc, p0, p1 in df_obj.aoR_loop(grids, vk):
     ni = df_obj._numint
@@ -178,8 +178,8 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
         y_k = einsum("RgI,Rk->kgI", y_s, phase)
         assert y_k.shape == (nkpt, p1 - p0, nip)
 
-        # fswp["z"][:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
-        z[:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
+        fswp["z"][:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
+        # z[:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
         log.info("aoR_loop[%6d:%6d] done", p0, p1)
 
     coul_k = []
@@ -192,10 +192,8 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
         coulg_k = pbctools.get_coulG(c, k=vq, mesh=mesh, Gv=gv) * c.vol / ngrid
         assert coulg_k.shape == (ngrid, )
 
-        z_k = fswp["z"][q, :, :].T
-        assert z_k.shape == (nip, ngrid)
-
-        zeta_g = pbctools.fft(z_k * phase, mesh) * coulg_k
+        zeta_g  = pbctools.fft(fswp["z"][q, :, :].T * phase, mesh) 
+        zeta_g *= coulg_k
         assert zeta_g.shape == (nip, ngrid)
 
         zeta_k = pbctools.ifft(zeta_g, mesh)
