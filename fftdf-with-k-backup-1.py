@@ -184,7 +184,7 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0):
         numpy.savetxt(c.stdout, rho_full_ref[:10, :10], fmt="% 6.4f", delimiter=", ")
         assert abs(rho_full_sol - rho_full_ref).max() < 1e-4
 
-        fswp["z_k"][:, p0:p1, :] = z_k
+        fswp["z"][:, p0:p1, :] = z_k
 
         log.info("aoR_loop[%6d:%6d] done", p0, p1)
 
