@@ -12,6 +12,8 @@ from pyscf.pbc import tools as pbctools
 import pyscf.pbc.gto as pbcgto
 import pyscf.pbc.dft as pbcdft
 
+PYSCF_MAX_MEMORY = int(os.environ.get("PYSCF_MAX_MEMORY", 160000))
+
 def gen_interpolating_points(c, gmesh=None, cisdf=10.0):
     if gmesh is None:
         gmesh = [15, 15, 15]
@@ -43,6 +45,7 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
     vk = c.get_kpts(kmesh)
     sc, phase = get_phase(c, vk, kmesh=kmesh, wrap_around=False)
 
+    c.verbose = 100
     log = logger.new_logger(c, c.verbose)
 
     from pyscf.pbc.gto.cell import estimate_ke_cutoff
@@ -107,7 +110,9 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
     x_k = numpy.sqrt(gw) * numpy.array(x_k)
     assert x_k.shape == (nkpt, nip, nao)
 
-    x_s = einsum("Rk,kIm->RIm", phase, x_k)
+    # x_s = einsum("Rk,kIm->RIm", phase, x_k)
+    x_s = phase @ x_k.reshape(nkpt, -1)
+    x_s = x_s.reshape(nimg, nip, nao)
     assert abs(x_s.imag).max() < 1e-10
 
     x_f = einsum("kIm,Rk,Sk->RISm", x_k, phase, phase.conj())
@@ -118,7 +123,8 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
     # x2_f_ref = einsum("RISm,TJSm->RITJ", x_f, x_f)
     # x2_f_ref = x2_f_ref.reshape(nimg * nip, nimg * nip)
 
-    x2_k = einsum("kIm,kJm->kIJ", x_k.conj(), x_k)
+    # x2_k = einsum("kIm,kJm->kIJ", x_k.conj(), x_k)
+    x2_k = numpy.asarray([xq.conj() @ xq.T for xq in x_k])
     assert x2_k.shape == (nkpt, nip, nip)
 
     # x2_f = einsum("kIJ,Rk,Sk->RISJ", x2_k, phase, phase.conj())
@@ -128,21 +134,27 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
 
     # assert abs(x2_f_sol.imag).max() < 1e-10, f"imaginary part of x2_f_sol is not zero, {abs(x2_f_sol).max() = }"
 
-    x2_s = einsum("Rk,kIJ->RIJ", phase, x2_k)
+    # x2_s = einsum("Rk,kIJ->RIJ", phase, x2_k)
+    x2_s = phase @ x2_k.reshape(nkpt, -1)
+    x2_s = x2_s.reshape(nimg, nip, nip)
     assert abs(x2_s.imag).max() < 1e-10
 
     # x2_s = einsum("Rk,kIJ->RIJ", phase, x2_k)
     # assert abs(x2_s).max() < 1e-10, f"imaginary part of x2_s is not zero, {abs(x2_s).max() = }"
 
     x4_s = x2_s * x2_s
-    x4_k = einsum("Rk,RIJ->kIJ", phase.conj(), x4_s)
+    # x4_k = einsum("Rk,RIJ->kIJ", phase.conj(), x4_s)
+    x4_k = phase.conj().T @ x4_s.reshape(nimg, -1)
+    x4_k = x4_k.reshape(nkpt, nip, nip)
     assert x4_k.shape == (nkpt, nip, nip)
 
     x4inv_k = [scipy.linalg.pinv(x4_k[q]) for q in range(nkpt)]
+    x4inv_k = numpy.asarray(x4inv_k)
 
     from pyscf.pbc.df.fft import FFTDF
     df_obj = FFTDF(c)
-    df_obj.mesh = [21, 21, 21]
+    df_obj.mesh = c.mesh
+    # df_obj.ke_cutoff = ke
     grids = df_obj.grids
     coord = grids.coords
     weigh = grids.weights
@@ -152,34 +164,63 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
     assert ngrid == numpy.prod(mesh)
 
     # the size of the dataset is nkpt * ngrid * nip * 16 bytes
-    log.info("Required disk space = %d MB", nkpt * ngrid * nip * 16 / 1e6)
+    required_memory = ngrid * nip * 16 / 1e6
+    log.info("ngrid = %d, nip = %d", ngrid, nip)
+    log.info("Required disk space = %d MB", nkpt * required_memory)
+    log.info("Required memory = %d MB", required_memory)
 
     from pyscf.lib import H5TmpFile
     fswp = H5TmpFile()
     fswp.create_dataset("z", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
     # z = numpy.empty((nkpt, ngrid, nip), dtype=numpy.complex128)
+    z = fswp["z"]
+    log.info("finished creating fswp: %s", fswp.filename)
     
     # for ao_ks_etc, p0, p1 in df_obj.aoR_loop(grids, vk):
+    from pyscf.lib.logger import process_clock, perf_counter
     ni = df_obj._numint
     nao = c.nao_nr()
     p0, p1 = 0, 0
-    for ao_k_etc in ni.block_loop(c, grids, nao, deriv=0, kpts=vk, blksize=2000):
+    for ao_k_etc in ni.block_loop(c, grids, nao, deriv=0, kpts=vk, blksize=16000):
         f_k = numpy.asarray(ao_k_etc[0])
         p0, p1 = p1, p1 + f_k.shape[1]
         assert f_k.shape == (nkpt, p1 - p0, nao)
+        log.info("\naoR_loop[%6d:%6d] start", p0, p1)
 
-        fx_k = einsum("kgm,kIm->kgI", f_k.conj(), x_k)
+        # fx_k = einsum("kgm,kIm->kgI", f_k.conj(), x_k)
+        t0 = (process_clock(), perf_counter())
+        fx_k = numpy.asarray([fq.conj() @ xq.T for fq, xq in zip(f_k, x_k)])
         assert fx_k.shape == (nkpt, p1 - p0, nip)
+        t1 = log.timer("fx_k method 1", *t0)
 
-        fx_s = einsum("Rk,kgI->RgI", phase, fx_k)
+        # t0 = (process_clock(), perf_counter())
+        # fx_k = einsum("kgm,kIm->kgI", f_k.conj(), x_k)
+        # t1 = log.timer("fx_k method 2", *t0)
+
+        # fx_s = einsum("Rk,kgI->RgI", phase, fx_k)
+        fx_s = phase @ fx_k.reshape(nkpt, -1)
+        fx_s = fx_s.reshape(nimg, p1 - p0, nip)
         assert abs(fx_s.imag).max() < 1e-10
+        log.info("fx_s[%6d:%6d] done", p0, p1) 
 
         y_s = fx_s * fx_s
-        y_k = einsum("RgI,Rk->kgI", y_s, phase)
+        # y_k = einsum("RgI,Rk->kgI", y_s, phase)
+        y_k = phase.T @ y_s.reshape(nimg, -1)
+        y_k = y_k.reshape(nkpt, p1 - p0, nip)
         assert y_k.shape == (nkpt, p1 - p0, nip)
-
-        fswp["z"][:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
+        log.info("y_k[%6d:%6d] done", p0, p1)
+        
+        # print(f"{y_k.shape = }, {x4inv_k.shape = }")
+        # fswp["z"][:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
         # z[:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
+        t0 = (process_clock(), perf_counter())
+        z[:, p0:p1, :] = numpy.asarray([yq @ xinvq.T for yq, xinvq in zip(y_k, x4inv_k)])
+        t1 = log.timer("z method 1", *t0)
+
+        # t0 = (process_clock(), perf_counter())
+        # z[:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
+        # t1 = log.timer("z method 2", *t0)
+
         log.info("aoR_loop[%6d:%6d] done", p0, p1)
 
     coul_k = []
@@ -189,20 +230,28 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
         phase = numpy.exp(-1j * numpy.dot(coord, vq))
         assert phase.shape == (ngrid, )
 
-        coulg_k = pbctools.get_coulG(c, k=vq, mesh=mesh, Gv=gv) * c.vol / ngrid
-        assert coulg_k.shape == (ngrid, )
+        coul_q = pbctools.get_coulG(c, k=vq, mesh=mesh, Gv=gv) * c.vol / ngrid
+        assert coul_q.shape == (ngrid, )
+        log.info("\ncoul_q[%d] done", q)
+        
+        z_q = z[q, :, :].T
+        # zeta_g  = pbctools.fft(fswp["z"][q, :, :].T * phase, mesh) 
+        zeta_q = pbctools.fft(z_q * phase, mesh)
+        zeta_q *= coul_q
+        assert zeta_q.shape == (nip, ngrid)
+        log.info("zeta_q[%d] done", q)
 
-        zeta_g  = pbctools.fft(fswp["z"][q, :, :].T * phase, mesh) 
-        zeta_g *= coulg_k
-        assert zeta_g.shape == (nip, ngrid)
+        zeta_q = pbctools.ifft(zeta_q, mesh)
+        zeta_q *= phase.conj()
+        log.info("zeta_q[%d] done", q)
 
-        zeta_k = pbctools.ifft(zeta_g, mesh)
-        zeta_k *= phase.conj()
-
-        coul_k.append(einsum("Ig,Jg->IJ", zeta_k, z_k.conj()))
+        coul_k.append(zeta_q @ z_q.conj().T)
+        # coul_k.append(einsum("Ig,Jg->IJ", zeta_q, z_q.conj()))
+        log.info("coul_k[%d] done", q)
 
     coul_k = numpy.asarray(coul_k)
     assert coul_k.shape == (nkpt, nip, nip)
+    log.info("coul_k done")
     return coul_k, x_k
 
 if __name__ == "__main__":
@@ -214,73 +263,16 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.max_memory = 2000
+    cell.ke_cutoff = 100
+    cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
+
+    print(f"{cell.ke_cutoff = }, {cell.mesh = }")
 
     cell.verbose = 5
     nao = cell.nao_nr()
 
     kmesh = [4, 4, 4]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(cell, ke=50, kmesh=kmesh, cisdf=0.8, gmesh=[11, 11, 11])
+    c, x = get_coul(cell, ke=cell.ke_cutoff, kmesh=kmesh, cisdf=0.9, gmesh=[11, 11, 11])
     nkpt, nip, nao = x.shape
-
-    assert c.shape == (nkpt, nip, nip)
-    assert x.shape == (nkpt, nip, nao)
-
-    from pyscf.pbc.df.fft import FFTDF
-    df_obj = FFTDF(cell)
-    df_obj.mesh = [21, 21, 21]
-
-    from pyscf.pbc.lib.kpts_helper import get_kconserv
-    from pyscf.pbc.lib.kpts_helper import get_kconserv_ria
-    vk = cell.get_kpts(kmesh)
-    kconserv3 = get_kconserv(cell, vk)
-    kconserv2 = get_kconserv_ria(cell, vk)
-    
-    for k1, vk1 in enumerate(vk):
-        for k2, vk2 in enumerate(vk):
-            q = kconserv2[k1, k2]
-            vq = vk[q]
-
-            for k3, vk3 in enumerate(vk):
-                k4 = kconserv3[k1, k2, k3]
-                vk4 = vk[k4]
-
-                eri_ref = df_obj.get_eri(kpts=[vk1, vk2, vk3, vk4], compact=False)
-                eri_ref = eri_ref.reshape(nao * nao, nao * nao)
-
-                # x1, x2, x3, x4 = cell.pbc_eval_gto("GTOval_sph", gx, kpts=[vk1, vk2, vk3, vk4])
-                x1 = x[k1]
-                x2 = x[k2]
-                x3 = x[k3]
-                x4 = x[k4]
-                eri_sol = einsum("IJ,Im,In,Jk,Jl->mnkl", c[q], x1.conj(), x2, x3.conj(), x4)
-                eri_sol = eri_sol.reshape(nao * nao, nao * nao)
-
-                eri = abs(eri_sol - eri_ref).max()
-                print(f"{k1 = :2d}, {k2 = :2d}, {k3 = :2d}, {k4 = :2d} {eri = :6.2e}")
-
-                if eri > 1e-4:
-                    # assert 1 == 2
-                    
-                    print(" q = %2d, vq  = [%s]" % (q, ", ".join(f"{v: 6.4f}" for v in vq)))
-                    print("k1 = %2d, vk1 = [%s]" % (k1, ", ".join(f"{v: 6.4f}" for v in vk1)))
-                    print("k2 = %2d, vk2 = [%s]" % (k2, ", ".join(f"{v: 6.4f}" for v in vk2)))
-                    print("k3 = %2d, vk3 = [%s]" % (k3, ", ".join(f"{v: 6.4f}" for v in vk3)))
-                    print("k4 = %2d, vk4 = [%s]" % (k4, ", ".join(f"{v: 6.4f}" for v in vk4)))
-
-                    print(f"\n{eri_sol.shape = }")
-                    numpy.savetxt(cell.stdout, eri_sol[:10, :10].real, fmt="% 6.4e", delimiter=", ")
-
-                    print(f"\neri_sol.imag = ")
-                    numpy.savetxt(cell.stdout, eri_sol[:10, :10].imag, fmt="% 6.4e", delimiter=", ")
-
-                    print(f"\n{eri_ref.shape = }")
-                    numpy.savetxt(cell.stdout, eri_ref[:10, :10].real, fmt="% 6.4e", delimiter=", ")
-
-                    print(f"\neri_ref.imag = ")
-                    numpy.savetxt(cell.stdout, eri_ref[:10, :10].imag, fmt="% 6.4e", delimiter=", ")
-
-                    assert 1 == 2
-
