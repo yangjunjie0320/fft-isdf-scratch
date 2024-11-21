@@ -157,6 +157,7 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
     from pyscf.lib import H5TmpFile
     fswp = H5TmpFile()
     fswp.create_dataset("z", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
+    z = numpy.empty((nkpt, ngrid, nip), dtype=numpy.complex128)
     
     # for ao_ks_etc, p0, p1 in df_obj.aoR_loop(grids, vk):
     ni = df_obj._numint
@@ -177,20 +178,8 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
         y_k = einsum("RgI,Rk->kgI", y_s, phase)
         assert y_k.shape == (nkpt, p1 - p0, nip)
 
-        # z_k = []
-        # err = 0.0
-        # for k, (y, x4inv) in enumerate(zip(y_k, x4inv_k)):
-
-        #     # res = scipy.linalg.lstsq(x4, y.T, cond=None)
-        #     # z = res[0].T
-        #     # # err = abs(x4 @ z.T - y.T).max()
-        #     # # assert err < 1e-10, f"err = {err}"
-        #     z = x4inv @ y.T
-        #     # print(f"{z.shape = }, {x4inv.shape = }, {y.shape = }")
-        #     fswp["z"][k, p0:p1, :] = y @ x4inv.T
-        #     # err = max(err, numpy.sqrt(res[3][-1]))
-
-        fswp["z"][:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
+        # fswp["z"][:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
+        z[:, p0:p1, :] = einsum("kgJ,kIJ->kgI", y_k, x4inv_k)
         log.info("aoR_loop[%6d:%6d] done", p0, p1)
 
     coul_k = []
@@ -216,126 +205,6 @@ def get_coul(c, ke=None, kmesh=None, cisdf=10.0, gmesh=None):
 
     coul_k = numpy.asarray(coul_k)
     assert coul_k.shape == (nkpt, nip, nip)
-
-    # from pyscf.pbc import tools
-    # from pyscf.pbc.lib.kpts_helper import get_kconserv
-    # from pyscf.pbc.lib.kpts_helper import get_kconserv_ria
-    # kconserv2 = get_kconserv_ria(c, vk)
-    # kconserv3 = get_kconserv(c, vk)
-
-    # gv = c.get_Gv(mesh)
-    # for k1, vk1 in enumerate(vk):
-    #     f1 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk1)
-
-    #     for k2, vk2 in enumerate(vk):
-    #         f2 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk2)
-
-    #         q = kconserv2[k1, k2]
-    #         vq = vk[q]
-    #         vk12 = vq # vk2 - vk1
-
-    #         phase = numpy.exp(-1j * numpy.dot(coord, vk12))
-    #         assert phase.shape == (ngrid, )
-    #         coulg = pbctools.get_coulG(c, k=vk12, mesh=mesh, Gv=gv)
-    #         coulg *= c.vol / ngrid
-
-    #         z12_r = fswp["z"][q, :, :].T
-    #         assert z12_r.shape == (nip, ngrid)
-
-    #         rho12_ref = einsum("gm,gn,g->mng", f1.conj(), f2, phase)
-    #         rho12_sol = einsum("Ig,Im,In->mng", z12_r, x_k[k1].conj(), x_k[k2])
-    #         rho12_sol *= phase
-    #         err = abs(rho12_sol - rho12_ref).max()
-
-    #         rho12_sol = rho12_sol.reshape(ngrid, nao * nao)
-    #         rho12_ref = rho12_ref.reshape(ngrid, nao * nao)
-
-    #         if err > 1e-4:
-    #             print("rho12_sol.real = ")
-    #             numpy.savetxt(c.stdout, rho12_sol[:10, :10].real, fmt="% 6.4e", delimiter=", ")
-
-    #             print("rho12_ref.real = ")
-    #             numpy.savetxt(c.stdout, rho12_ref[:10, :10].real, fmt="% 6.4e", delimiter=", ")
-
-    #             assert err < 1e-4, f"err = {err}"
-            
-    #         rho12_r = rho12_ref.reshape(nao * nao, ngrid)
-    #         rho12_g = tools.fft(rho12_r, df_obj.mesh)
-    #         v12_g = rho12_g * coulg
-
-    #         z12_g = pbctools.fft(z12_r * phase, df_obj.mesh)
-    #         u12_g = z12_g * coulg
-
-    #         v12_r = tools.ifft(v12_g, df_obj.mesh)
-    #         v12_r *= phase.conj()
-    #         v12_r = v12_r.reshape(nao * nao, ngrid)
-
-    #         u12_r = tools.ifft(u12_g, df_obj.mesh)
-    #         u12_r *= phase.conj()
-    #         u12_r = u12_r.reshape(nip, ngrid)
-
-    #         for k3, vk3 in enumerate(vk):
-    #             k4 = kconserv3[k1, k2, k3]
-    #             vk4 = vk[k4]
-
-    #             f3 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk3)
-    #             f4 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk4)
-
-    #             rho34_ref = einsum("gm,gn->mng", f3.conj(), f4)
-    #             rho34_r = rho34_ref.reshape(nao * nao, ngrid)
-
-    #             z34_r = z12_r.conj()
-    #             rho34_sol = einsum("Ig,Im,In->mng", z34_r, x_k[k3].conj(), x_k[k4])
-    #             err = abs(rho34_sol - rho34_ref).max()
-    #             assert err < 1e-4, f"err = {err}"
-
-    #             eri_ref = einsum("Im,In,Ig,yg->mny", x_k[k1].conj(), x_k[k2], u12_r, rho34_sol)
-    #             eri_ref = eri_ref.reshape(nao * nao, nao * nao)
-    #             eri_sol = einsum("IJ,Im,In,Jk,Jl->mnkl", coul_k[q], x_k[k1].conj(), x_k[k2], x_k[k3].conj(), x_k[k4])
-    #             eri_sol = eri_sol.reshape(nao * nao, nao * nao)
-
-    #             # eri_ref = df_obj.get_eri(kpts=[vk1, vk2, vk3, vk4], compact=False)
-    #             # eri_ref = eri_ref.reshape(nao * nao, nao * nao)
-
-    #             err = abs(eri_sol - eri_ref).max()
-    #             print(f"{k1 = :2d}, {k2 = :2d}, {k3 = :2d}, {k4 = :2d} {err = :6.2e}")
-    #             assert err < 1e-4, f"err = {err}"
-
-    # assert 1 == 2
-
-    # for k1, vk1 in enumerate(vk):
-    #     for k2, vk2 in enumerate(vk):
-    #         q = kconserv2[k1, k2]
-    #         vq = vk[q]
-    #         vk12 = vk2 - vk1
-    #         err = abs(vq - vk12).max()
-
-    #         zq = fswp["z"][q, :, :].T
-    #         rho_sol = einsum("Ig,Im,In->gmn", zq, x_k[k1].conj(), x_k[k2])
-    #         nao = rho_sol.shape[-1]
-    #         rho_sol = rho_sol.reshape(-1, nao * nao)
-
-    #         phi_k1 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk1)
-    #         phi_k2 = c.pbc_eval_gto("GTOval_sph", coord, kpts=vk2)
-    #         rho_ref = einsum("gm,gn->gmn", phi_k1.conj(), phi_k2)
-    #         rho_ref = rho_ref.reshape(-1, nao * nao)
-
-    #         err = abs(rho_sol - rho_ref).max()
-    #         print(f"{k1 = :2d}, {k2 = :2d}, {q = :2d} {err = :6.2e}")
-            # print("rho_ref real = ")
-            # numpy.savetxt(c.stdout, rho_ref[:10, :10].real, fmt="% 6.4e", delimiter=", ")
-
-            # print("rho_sol real = ")
-            # numpy.savetxt(c.stdout, rho_sol[:10, :10].real, fmt="% 6.4e", delimiter=", ")
-
-            # print("rho_ref imag max element = % 6.4e" % abs(rho_ref.imag).max())
-            # print("rho_sol imag max element = % 6.4e" % abs(rho_sol.imag).max())
-            # numpy.savetxt(c.stdout, rho_ref[:10, :10].imag, fmt="% 6.4e", delimiter=", ")
-
-            # print("rho_sol imag = ")
-            # numpy.savetxt(c.stdout, rho_sol[:10, :10].imag, fmt="% 6.4e", delimiter=", ")
-
-    # assert 1 == 2 
     return coul_k, x_k
 
 if __name__ == "__main__":
