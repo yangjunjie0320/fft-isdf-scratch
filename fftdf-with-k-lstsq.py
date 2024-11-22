@@ -147,14 +147,15 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
         x4_q = x4_k[q]
         assert x4_q.shape == (nip, nip)
 
-        # z_q = scipy.linalg.lstsq(x4_q, y_q.T)[0]
-        # err = abs(x4_q @ z_q - y_q.T).max()
-        # assert err < 1e-10
-        res = scipy.linalg.pinvh(x4_q, return_rank=True)
-        t_q = res[0]
-        rank = res[1]
+        res = scipy.linalg.lstsq(x4_q, y_q.T, lapack_driver="gelsy")
+        z_q = res[0]
+        rank = res[2]
 
-        z_q = t_q @ y_q.T
+        # res = scipy.linalg.pinvh(x4_q, return_rank=True)
+        # t_q = res[0]
+        # rank = res[1]
+        # z_q = t_q @ y_q.T
+
         assert z_q.shape == (nip, ngrid)
         
         # z_q = z[q, :, :].T
@@ -182,7 +183,7 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 400
+    cell.ke_cutoff = 200
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
@@ -190,10 +191,10 @@ if __name__ == "__main__":
     df_obj = FFTDF(cell)
     # df_obj.mesh = [21, 21, 21]
 
-    kmesh = [4, 4, 4]
-    # kmesh = [2, 2, 2]
+    # kmesh = [4, 4, 4]
+    kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(df_obj, kmesh=kmesh, k0=2.0, cisdf=0.8, blksize=8000)
+    c, x = get_coul(df_obj, kmesh=kmesh, k0=8.0, cisdf=0.8, blksize=8000)
     nkpt, nip, nao = x.shape
 
     from pyscf.pbc.lib.kpts_helper import get_kconserv
