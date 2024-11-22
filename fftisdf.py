@@ -69,43 +69,39 @@ def build(df_obj):
     log.info("Required disk space = %d GB", required_disk_space)
 
     from pyscf.lib import H5TmpFile
-    fswp = H5TmpFile()
-    fswp.create_dataset("y", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
-    # z = fswp["y"]
-    y = fswp["y"]
-    log.debug("finished creating fswp: %s", fswp.filename)
+    fswap = H5TmpFile()
+    fswap.create_dataset("y", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
+    y = fswap["y"]
+    log.debug("finished creating fswp: %s", fswap.filename)
     
     # compute the memory required for the aoR_loop
+    blksize = df_obj.blksize
     required_memory = blksize * nip * nkpt * 16 / 1e6
     log.info("Required memory = %d MB", required_memory)
     
     ni = df_obj._numint
-    p0, p1 = 0, 0
+    g0g1 = range(0, ngrid, blksize)
     
     t0 = (process_clock(), perf_counter())
-    # for ao_k_etc in ni.block_loop(cell, grids, nao, deriv=0, kpts=vk, blksize=blksize):
-    #     f_k = numpy.asarray(ao_k_etc[0])
-    #     p0, p1 = p1, p1 + f_k.shape[1]
-    #     assert f_k.shape == (nkpt, p1 - p0, nao)
+    block_loop = ni.block_loop(pcell, grids, nao, deriv=0, kpts=vk, blksize=blksize)
+    for ig, ao_k_etc in enumerate(block_loop):
+        g0, g1 = g0g1[ig:ig+2]
+        f_k = numpy.asarray(ao_k_etc[0])
+        assert f_k.shape == (nkpt, g1 - g0, nao)
 
-    #     fx_k = numpy.asarray([f.conj() @ x.T for f, x in zip(f_k, x_k)])
-    #     assert fx_k.shape == (nkpt, p1 - p0, nip)
+        fx_k = numpy.asarray([f.conj() @ x.T for f, x in zip(f_k, x_k)])
+        assert fx_k.shape == (nkpt, g1 - g0, nip)
 
-    #     fx_s = phase @ fx_k.reshape(nkpt, -1)
-    #     fx_s = fx_s.reshape(nimg, p1 - p0, nip)
-    #     assert abs(fx_s.imag).max() < 1e-10
+        fx_s = phase @ fx_k.reshape(nkpt, -1)
+        fx_s = fx_s.reshape(nimg, g1 - g0, nip)
+        assert abs(fx_s.imag).max() < 1e-10
 
-    #     y_s = fx_s * fx_s
-    #     y_k = phase.T @ y_s.reshape(nimg, -1)
-    #     # y_k = y_k.reshape(nkpt, p1 - p0, nip)
-    #     # assert y_k.shape == (nkpt, p1 - p0, nip)
-    #     y[:, p0:p1, :] = y_k.reshape(nkpt, p1 - p0, nip)
+        y_s = fx_s * fx_s
+        y_k = phase.T @ y_s.reshape(nimg, -1)
+        y[:, g0:g1, :] = y_k.reshape(nkpt, g1 - g0, nip)
 
-    #     # z[:, p0:p1, :] = numpy.asarray([yq @ xinvq.T for yq, xinvq in zip(y_k, x4inv_k)])
-    #     log.debug("finished aoR_loop[%8d:%8d]", p0, p1)
-    df_obj._solve_y(x_k, x4_k, fswp=fswp, phase=phase)
-
-    t1 = log.timer("building z", *t0)
+        log.debug("finished aoR_loop[%8d:%8d]", g0, g1)
+    t1 = log.timer("building y", *t0)
 
     mesh = df_obj.mesh
     gv = pcell.get_Gv(mesh)
@@ -113,43 +109,43 @@ def build(df_obj):
     required_memory = nip * ngrid * 16 / 1e6
     log.info("Required memory = %d MB", required_memory)
 
-    # coul_q = []
-    # for q, vq in enumerate(vk):
-    #     t0 = (process_clock(), perf_counter())
-    #     phase = numpy.exp(-1j * numpy.dot(coord, vq))
-    #     assert phase.shape == (ngrid, )
+    coul_q = []
+    for q, vq in enumerate(vk):
+        t0 = (process_clock(), perf_counter())
+        phase = numpy.exp(-1j * numpy.dot(coord, vq))
+        assert phase.shape == (ngrid, )
         
-    #     y_q = y[q, :, :]
-    #     assert y_q.shape == (ngrid, nip)
+        y_q = y[q, :, :]
+        assert y_q.shape == (ngrid, nip)
 
-    #     x4_q = x4_k[q]
-    #     assert x4_q.shape == (nip, nip)
+        x4_q = x4_k[q]
+        assert x4_q.shape == (nip, nip)
 
-    #     res = scipy.linalg.lstsq(x4_q, y_q.T, lapack_driver="gelsy")
-    #     z_q = res[0]
-    #     rank = res[2]
+        res = scipy.linalg.lstsq(x4_q, y_q.T, lapack_driver="gelsy")
+        z_q = res[0]
+        rank = res[2]
 
-    #     # res = scipy.linalg.pinvh(x4_q, return_rank=True)
-    #     # t_q = res[0]
-    #     # rank = res[1]
-    #     # z_q = t_q @ y_q.T
+        # res = scipy.linalg.pinvh(x4_q, return_rank=True)
+        # t_q = res[0]
+        # rank = res[1]
+        # z_q = t_q @ y_q.T
 
-    #     assert z_q.shape == (nip, ngrid)
+        assert z_q.shape == (nip, ngrid)
         
-    #     # z_q = z[q, :, :].T
-    #     zeta_q = pbctools.fft(z_q * phase, mesh)
-    #     zeta_q *= pbctools.get_coulG(cell, k=vq, mesh=mesh, Gv=gv)
-    #     zeta_q *= cell.vol / ngrid
-    #     assert zeta_q.shape == (nip, ngrid)
+        # z_q = z[q, :, :].T
+        zeta_q = pbctools.fft(z_q * phase, mesh)
+        zeta_q *= pbctools.get_coulG(pcell, k=vq, mesh=mesh, Gv=gv)
+        zeta_q *= pcell.vol / ngrid
+        assert zeta_q.shape == (nip, ngrid)
 
-    #     zeta_q = pbctools.ifft(zeta_q, mesh)
-    #     zeta_q *= phase.conj()
+        zeta_q = pbctools.ifft(zeta_q, mesh)
+        zeta_q *= phase.conj()
 
-    #     coul_q.append(zeta_q @ z_q.conj().T)
-    #     t1 = log.timer("coul[%2d], rank = %d / %d" % (q, rank, nip), *t0)
-    df_obj._solve_z(x_k, x4_k, fswp=fswp, phase=phase)
+        coul_q.append(zeta_q @ z_q.conj().T)
+        t1 = log.timer("coul[%2d], rank = %d / %d" % (q, rank, nip), *t0)
+    df_obj._solve_z(x_k, x4_k, fswp=fswap, phase=phase)
 
-    df_obj.z = fswp["z"]
+    df_obj.z = fswap["z"]
     df_obj.x = x_k
 
 class InterpolativeSeparableDensityFitting(FFTDF):
