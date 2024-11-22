@@ -183,7 +183,7 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 200
+    cell.ke_cutoff = 50
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
@@ -191,10 +191,10 @@ if __name__ == "__main__":
     df_obj = FFTDF(cell)
     # df_obj.mesh = [21, 21, 21]
 
-    # kmesh = [4, 4, 4]
-    kmesh = [2, 2, 2]
+    kmesh = [4, 4, 4]
+    # kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(df_obj, kmesh=kmesh, k0=8.0, cisdf=0.8, blksize=8000)
+    c, x = get_coul(df_obj, kmesh=kmesh, k0=8.0, cisdf=0.8, blksize=4000)
     nkpt, nip, nao = x.shape
 
     from pyscf.pbc.lib.kpts_helper import get_kconserv
