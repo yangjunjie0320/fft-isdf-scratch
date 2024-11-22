@@ -82,15 +82,15 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     assert x4_k.shape == (nkpt, nip, nip)
 
     t0 = (process_clock(), perf_counter())
-    x4inv_k = []
-    for q, x4q in enumerate(x4_k):
-        res = scipy.linalg.pinv(x4q, return_rank=True)
-        x4inv_k.append(res[0])
-        log.debug("rank of x4[%d] = %d / %d", q, res[1], x4q.shape[0])
+    # x4inv_k = []
+    # for q, x4q in enumerate(x4_k):
+    #     res = scipy.linalg.pinv(x4q, return_rank=True)
+    #     x4inv_k.append(res[0])
+    #     log.debug("rank of x4[%d] = %d / %d", q, res[1], x4q.shape[0])
 
-    x4inv_k = numpy.asarray(x4inv_k)
-    assert x4inv_k.shape == (nkpt, nip, nip)
-    t1 = log.timer("building x4inv_k", *t0)
+    # x4inv_k = numpy.asarray(x4inv_k)
+    # assert x4inv_k.shape == (nkpt, nip, nip)
+    # t1 = log.timer("building x4inv_k", *t0)
 
     grids = df_obj.grids
     coord = grids.coords
@@ -101,8 +101,9 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
 
     from pyscf.lib import H5TmpFile
     fswp = H5TmpFile()
-    fswp.create_dataset("z", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
-    z = fswp["z"]
+    fswp.create_dataset("y", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
+    # z = fswp["y"]
+    y = fswp["y"]
     log.debug("finished creating fswp: %s", fswp.filename)
     
     # compute the memory required for the aoR_loop
@@ -127,11 +128,12 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
 
         y_s = fx_s * fx_s
         y_k = phase.T @ y_s.reshape(nimg, -1)
-        y_k = y_k.reshape(nkpt, p1 - p0, nip)
-        assert y_k.shape == (nkpt, p1 - p0, nip)
+        # y_k = y_k.reshape(nkpt, p1 - p0, nip)
+        # assert y_k.shape == (nkpt, p1 - p0, nip)
+        y[:, p0:p1, :] = y_k.reshape(nkpt, p1 - p0, nip)
 
-        z[:, p0:p1, :] = numpy.asarray([yq @ xinvq.T for yq, xinvq in zip(y_k, x4inv_k)])
-        log.debug("finished building z[%6d:%6d]", p0, p1)
+        # z[:, p0:p1, :] = numpy.asarray([yq @ xinvq.T for yq, xinvq in zip(y_k, x4inv_k)])
+        # log.debug("finished building z[%6d:%6d]", p0, p1)
 
     t1 = log.timer("building z", *t0)
 
@@ -141,24 +143,42 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     required_memory = nip * ngrid * 16 / 1e6
     log.info("Required memory = %d MB", required_memory)
 
-    t0 = (process_clock(), perf_counter())
     coul_q = []
+    rank = 300
     for q, vq in enumerate(vk):
-        
+        t0 = (process_clock(), perf_counter())
         phase = numpy.exp(-1j * numpy.dot(coord, vq))
         assert phase.shape == (ngrid, )
         
-        z_q = z[q, :, :].T
+        y_q = y[q, :, :]
+        assert y_q.shape == (ngrid, nip)
+
+        x4_q = x4_k[q]
+        assert x4_q.shape == (nip, nip)
+        u, s, vh = scipy.linalg.svd(x4_q, full_matrices=False)
+        u = u[:, :rank]
+        s = s[:rank]
+        vh = vh[:rank, :]
+
+        z_q = (1.0 / s) * (vh @ y_q.T)
+        assert z_q.shape == (rank, ngrid)
+
+        # z_q = scipy.linalg.lstsq(x4_q, y_q.T)[0]
+        # err = abs(x4_q @ z_q - y_q.T).max()
+        # assert err < 1e-10
+        # assert z_q.shape == (nip, ngrid)
+        
+        # z_q = z[q, :, :].T
         zeta_q = pbctools.fft(z_q * phase, mesh)
         zeta_q *= pbctools.get_coulG(cell, k=vq, mesh=mesh, Gv=gv)
         zeta_q *= cell.vol / ngrid
-        assert zeta_q.shape == (nip, ngrid)
+        assert zeta_q.shape == (rank, ngrid)
 
         zeta_q = pbctools.ifft(zeta_q, mesh)
         zeta_q *= phase.conj()
 
         coul_q.append(zeta_q @ z_q.conj().T)
-    t1 = log.timer("coul_q", *t0)
+        t1 = log.timer("coul[%d]" % q, *t0)
 
     coul_q = numpy.asarray(coul_q)
     assert coul_q.shape == (nkpt, nip, nip)
@@ -184,7 +204,7 @@ if __name__ == "__main__":
     # kmesh = [4, 4, 4]
     kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(df_obj, kmesh=kmesh, k0=8.0, cisdf=0.9, blksize=4000)
+    c, x = get_coul(df_obj, kmesh=kmesh, k0=8.0, cisdf=0.6, blksize=4000)
     nkpt, nip, nao = x.shape
 
     from pyscf.pbc.lib.kpts_helper import get_kconserv
