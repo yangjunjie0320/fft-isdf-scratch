@@ -3,124 +3,190 @@ from itertools import product
 
 import numpy, scipy
 from opt_einsum import contract as einsum
+import scipy.linalg
 
 import pyscf
-from pyscf.pbc import tools
+from pyscf.lib import logger, current_memory
+from pyscf.lib.logger import process_clock, perf_counter
+
+from pyscf.pbc.df.fft import FFTDF
+from pyscf.pbc import tools as pbctools
 import pyscf.pbc.gto as pbcgto
 import pyscf.pbc.dft as pbcdft
 
-c   = pyscf.pbc.gto.Cell()
-c.a = numpy.eye(3) * 3.5668
-c.atom = '''C     0.0000  0.0000  0.0000
-            C     0.8917  0.8917  0.8917
-            C     1.7834  1.7834  0.0000
-            C     2.6751  2.6751  0.8917
-            C     1.7834  0.0000  1.7834
-            C     2.6751  0.8917  2.6751
-            C     0.0000  1.7834  1.7834
-            C     0.8917  2.6751  2.6751'''
-c.basis  = 'gth-szv'
-c.pseudo = 'gth-pade'
-c.verbose = 0
-c.unit = 'aa'
-c.max_memory = 100
-c.build()
+PYSCF_MAX_MEMORY = int(os.environ.get("PYSCF_MAX_MEMORY", 160000))
 
-nao = c.nao_nr()
-print(f"{nao = }")
+def build(df_obj):
+    log = logger.new_logger(df_obj, df_obj.verbose)
+    pcell = df_obj.cell
 
-from pyscf.pbc.df.fft import FFTDF
-df = FFTDF(c)
-df.max_memory = 4
-gmesh = c.mesh
+    from pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+    kmesh = kpts_to_kmesh(pcell, df_obj.kpts)
+    log.debug("Transform kpts to kmesh")
+    log.debug("original    kpts  = %s", df_obj.kpts)
+    log.debug("transformed kmesh = %s", kmesh)
 
-from pyscf.pbc.dft.gen_grid import gen_uniform_grids, gen_becke_grids
-coord = gen_uniform_grids(c, mesh=[16, 16, 16], wrap_around=False)
-weigh = c.vol / coord.shape[0]
-print(f"{coord.shape = }, {weigh.shape = }")
+    from pyscf.pbc.tools.k2gamma import get_phase
+    vk = pcell.get_kpts(kmesh)
+    scell, phase = get_phase(pcell, vk, kmesh=kmesh, wrap_around=False)
+    log.debug("transformed kpts = %s", vk)
 
-# coord, weigh = gen_becke_grids(c, level=1)
-# print(f"{coord.shape = }, {weigh.shape = }")
+    nao = pcell.nao_nr()
+    nkpt = nimg = numpy.prod(kmesh)
 
-phi  = numpy.sqrt(weigh) * c.pbc_eval_gto("GTOval_sph", coord)
-phi  = phi.T
-nao, ng = phi.shape
-print(f"{ng = }, {nao = }")
+    xip = df_obj.select_interpolation_points()
+    nip = xip.shape[0]
+    
+    x_k = pcell.pbc_eval_gto("GTOval", xip, kpts=vk)
+    x_k = numpy.array(x_k)
+    assert x_k.shape == (nkpt, nip, nao)
+    log.info("Number of interpolation points = %d", nip)
 
-ovlp_sol = einsum("mg,ng->mn", phi, phi)
-ovlp_ref = c.pbc_intor('int1e_ovlp', hermi=0)
-print(f"{ovlp_sol.shape = }")
-numpy.savetxt(c.stdout, ovlp_sol, fmt="% 6.4f", delimiter=", ")
-print(f"{ovlp_ref.shape = }")
-numpy.savetxt(c.stdout, ovlp_ref, fmt="% 6.4f", delimiter=", ")
-err = abs(ovlp_ref - ovlp_sol).max()
-print(f"{err = }")
-assert 1 == 2
+    x_s = phase @ x_k.reshape(nkpt, -1)
+    x_s = x_s.reshape(nimg, nip, nao)
+    assert abs(x_s.imag).max() < 1e-10
 
-from pyscf.lib.scipy_helper import pivoted_cholesky
-zeta = einsum("mI,nI,mJ,nJ->IJ", phi, phi, phi, phi)
-chol, perm, rank = pivoted_cholesky(zeta, tol=1e-30)
-mask = perm[:rank]
-print(f"{mask.shape = }")
+    x2_k = numpy.asarray([xq.conj() @ xq.T for xq in x_k])
+    assert x2_k.shape == (nkpt, nip, nip)
 
-rho_sol = einsum("gm,gn->gmn", phi, phi)
-rho_ref = einsum("mI,nI,gI->gmn", phi[mask], phi[mask], zeta)
-err = abs(rho_ref - rho_sol).max()
-print(f"{err = }")
-assert 1 == 2
+    x2_s = phase @ x2_k.reshape(nkpt, -1)
+    x2_s = x2_s.reshape(nimg, nip, nip)
+    assert abs(x2_s.imag).max() < 1e-10
 
-# build the supercell
-from pyscf.pbc.tools import k2gamma
-from pyscf.pbc.tools import super_cell
-from pyscf.pbc.tools.pbc import _build_supcell_
+    x4_s = x2_s * x2_s
+    x4_k = phase.conj().T @ x4_s.reshape(nimg, -1)
+    x4_k = x4_k.reshape(nkpt, nip, nip)
+    assert x4_k.shape == (nkpt, nip, nip)
 
-nimg = [2, 2, 2]
-tv = k2gamma.translation_vectors_for_kmesh(c, nimg, wrap_around=False)
-print(f"{tv.shape = }")
-sc = c.copy(deep=False)
-sc.a = numpy.einsum("i,ij->ij", nimg, c.a)
-mesh = numpy.asarray(nimg) * numpy.asarray(c.mesh)
-sc.mesh = (mesh // 2) * 2 + 1
-_build_supcell_(sc, c, tv)
+    t0 = (process_clock(), perf_counter())
 
-df_sc = FFTDF(sc)
-df_sc.max_memory = 2000
+    grids = df_obj.grids
+    coord = grids.coords
+    ngrid = coord.shape[0]
 
-phase = numpy.exp(1j * numpy.einsum("g,ij->gi", coord, c.reciprocal_vectors()))
-print(f"{phase.shape = }")
+    required_disk_space = nkpt * ngrid * nip * 16 / 1e9
+    log.info("nkpt = %d, ngrid = %d, nip = %d", nkpt, ngrid, nip)
+    log.info("Required disk space = %d GB", required_disk_space)
 
-coord = coord[mask]
-coord = coord[None, :, :] + tv[:, None, :]
-coord = coord.reshape(-1, 3)
+    from pyscf.lib import H5TmpFile
+    fswp = H5TmpFile()
+    fswp.create_dataset("y", shape=(nkpt, ngrid, nip), dtype=numpy.complex128)
+    # z = fswp["y"]
+    y = fswp["y"]
+    log.debug("finished creating fswp: %s", fswp.filename)
+    
+    # compute the memory required for the aoR_loop
+    required_memory = blksize * nip * nkpt * 16 / 1e6
+    log.info("Required memory = %d MB", required_memory)
+    
+    ni = df_obj._numint
+    p0, p1 = 0, 0
+    
+    t0 = (process_clock(), perf_counter())
+    # for ao_k_etc in ni.block_loop(cell, grids, nao, deriv=0, kpts=vk, blksize=blksize):
+    #     f_k = numpy.asarray(ao_k_etc[0])
+    #     p0, p1 = p1, p1 + f_k.shape[1]
+    #     assert f_k.shape == (nkpt, p1 - p0, nao)
 
-phi = numpy.sqrt(weigh) * c.pbc_eval_gto("GTOval_sph", coord)
-phi = phi.T
+    #     fx_k = numpy.asarray([f.conj() @ x.T for f, x in zip(f_k, x_k)])
+    #     assert fx_k.shape == (nkpt, p1 - p0, nip)
 
-for ao, p0, p1 in df_sc.aoR_loop(deriv=0):
-    print(f"{p0 = }, {p1 = }")
-    weigh = ao[3]
-    coord = ao[4]   
-    ng = weigh.size
-    assert ao[0][0].shape == (ng, nao)
+    #     fx_s = phase @ fx_k.reshape(nkpt, -1)
+    #     fx_s = fx_s.reshape(nimg, p1 - p0, nip)
+    #     assert abs(fx_s.imag).max() < 1e-10
 
-    rhs = einsum("gm,gn,mI,nI->gI", ao[0][0], ao[0][0], phi, phi)
-    print(f"{rhs.shape = }")
+    #     y_s = fx_s * fx_s
+    #     y_k = phase.T @ y_s.reshape(nimg, -1)
+    #     # y_k = y_k.reshape(nkpt, p1 - p0, nip)
+    #     # assert y_k.shape == (nkpt, p1 - p0, nip)
+    #     y[:, p0:p1, :] = y_k.reshape(nkpt, p1 - p0, nip)
 
-    res = scipy.linalg.lstsq(zeta[mask][:, mask], rhs.T)
-    z = res[0].T
-    resid = res[1]
-    rank = res[2]
-    print(f"{z.shape = }, {rank = }, {resid = }")
+    #     # z[:, p0:p1, :] = numpy.asarray([yq @ xinvq.T for yq, xinvq in zip(y_k, x4inv_k)])
+    #     log.debug("finished aoR_loop[%8d:%8d]", p0, p1)
+    df_obj._solve_y(x_k, x4_k, fswp=fswp, phase=phase)
 
-    resid = zeta[mask][:, mask] @ z.T - rhs.T
-    print(f"{resid.shape = }, {resid.max() = }")
+    t1 = log.timer("building z", *t0)
 
-    rho_ref = einsum("gm,gn->gmn", ao[0][0], ao[0][0])
-    print(f"{rho_ref.shape = }, {rho_ref.max() = }")
+    mesh = df_obj.mesh
+    gv = pcell.get_Gv(mesh)
+    
+    required_memory = nip * ngrid * 16 / 1e6
+    log.info("Required memory = %d MB", required_memory)
 
-    rho_sol = einsum("gI,mI,nI->gmn", z, phi[:, mask], phi[:, mask])
-    print(f"{rho_sol.shape = }, {rho_sol.max() = }")
+    # coul_q = []
+    # for q, vq in enumerate(vk):
+    #     t0 = (process_clock(), perf_counter())
+    #     phase = numpy.exp(-1j * numpy.dot(coord, vq))
+    #     assert phase.shape == (ngrid, )
+        
+    #     y_q = y[q, :, :]
+    #     assert y_q.shape == (ngrid, nip)
 
-    err = abs(rho_ref - rho_sol).max()
-    print(f"{err = }")
+    #     x4_q = x4_k[q]
+    #     assert x4_q.shape == (nip, nip)
 
+    #     res = scipy.linalg.lstsq(x4_q, y_q.T, lapack_driver="gelsy")
+    #     z_q = res[0]
+    #     rank = res[2]
+
+    #     # res = scipy.linalg.pinvh(x4_q, return_rank=True)
+    #     # t_q = res[0]
+    #     # rank = res[1]
+    #     # z_q = t_q @ y_q.T
+
+    #     assert z_q.shape == (nip, ngrid)
+        
+    #     # z_q = z[q, :, :].T
+    #     zeta_q = pbctools.fft(z_q * phase, mesh)
+    #     zeta_q *= pbctools.get_coulG(cell, k=vq, mesh=mesh, Gv=gv)
+    #     zeta_q *= cell.vol / ngrid
+    #     assert zeta_q.shape == (nip, ngrid)
+
+    #     zeta_q = pbctools.ifft(zeta_q, mesh)
+    #     zeta_q *= phase.conj()
+
+    #     coul_q.append(zeta_q @ z_q.conj().T)
+    #     t1 = log.timer("coul[%2d], rank = %d / %d" % (q, rank, nip), *t0)
+    df_obj._solve_z(x_k, x4_k, fswp=fswp, phase=phase)
+
+    df_obj.z = fswp["z"]
+    df_obj.x = x_k
+
+class InterpolativeSeparableDensityFitting(FFTDF):
+    k0 = 8.0 # cutoff kinetic energy for the parent grid
+    r0 = 0.8 # rate of the interpolation points to the parent grid
+    
+    blksize = 8000 # block size for the aoR_loop
+
+    def build(self):
+        pass
+    
+    def select_interpolation_points(self, k0=None, r0=None):
+        if k0 is None: k0 = self.k0
+        if r0 is None: r0 = self.r0
+
+        pcell = self.cell
+        nao = pcell.nao_nr()
+
+        # from pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+        # kmesh = kpts_to_kmesh(pcell, self.kpts)
+        # from pyscf.pbc.tools.k2gamma import get_phase
+        # vk = pcell.get_kpts(kmesh)
+        # scell, phase = get_phase(pcell, vk, kmesh=kmesh, wrap_around=False)
+        
+        lv = pcell.lattice_vectors()
+        mg = pbctools.cutoff_to_mesh(lv, k0)
+        ng = numpy.prod(mg)
+
+        xg = pcell.gen_uniform_grids(mg)
+        f  = pcell.pbc_eval_gto("GTOval", xg)
+        assert f.shape == (ng, nao)
+
+        f4 = (f @ f.T) ** 2
+        assert f4.shape == (ng, ng)
+
+        from pyscf.lib.scipy_helper import pivoted_cholesky
+        chol, perm, rank = pivoted_cholesky(f4, tol=1e-32)
+        nip = int(ng * r0)
+        mask = perm[:nip]
+        return xg[mask]
