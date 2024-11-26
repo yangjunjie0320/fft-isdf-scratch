@@ -59,9 +59,10 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     assert x2_k.shape == (nkpt, ng, ng)
 
     x2_s = phase @ x2_k.reshape(nkpt, -1)
-    x2_s = x2_s.reshape(nimg, ng, nao)
+    x2_s = x2_s.reshape(nimg, ng, ng)
     assert abs(x2_s.imag).max() < 1e-10
 
+<<<<<<< HEAD
     x4_s = x2_s[0] * x2_s[0]
     assert x4_s.shape == (ng, ng)
 
@@ -69,6 +70,17 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     chol, perm, rank = pivoted_cholesky(x4, tol=1e-32)
     nip = min(rank, int(ng * cisdf))
     log.info("nip = %d, rank = %d", nip, rank)
+=======
+    x4_s = x2_s * x2_s
+    print(x4_s.shape)
+    x4 = x4_s[0]
+
+    from pyscf.lib.scipy_helper import pivoted_cholesky
+    chol, perm, rank = pivoted_cholesky(x4, tol=1e-32)
+    nip = int(ng * cisdf)
+    log.info("nip = %d, rank = %d, ng = %d", nip, rank, ng)
+    assert 1 == 2
+>>>>>>> 9424034 (update)
 
     mask = perm[:nip]
     x_k = cell.pbc_eval_gto("GTOval", gx[mask], kpts=vk)

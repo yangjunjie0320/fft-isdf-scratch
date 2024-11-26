@@ -163,7 +163,7 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
         assert x4_q.shape == (nip, nip)
 
         # z_q = y_q
-        res = scipy.linalg.lstsq(x4_q, y_q) # , lapack_driver="gelsy")
+        res = scipy.linalg.lstsq(x4_q, y_q, lapack_driver="gelsy")
         z_q = res[0]
         rank = res[2]
         assert z_q.shape == (nip, ngrid)
@@ -196,19 +196,17 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 50
+    cell.ke_cutoff = 100
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
     from pyscf.pbc.df.fft import FFTDF
     df_obj = FFTDF(cell)
-    df_obj.mesh = [15, 15, 15]
     df_obj.verbose = 5
 
-    # kmesh = [4, 4, 4]
     kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(df_obj, kmesh=kmesh, k0=20.0, cisdf=0.9, blksize=1000)
+    c, x = get_coul(df_obj, kmesh=kmesh, k0=10.0, cisdf=0.9, blksize=40000)
     nkpt, nip, nao = x.shape
 
     from pyscf.pbc.lib.kpts_helper import get_kconserv
