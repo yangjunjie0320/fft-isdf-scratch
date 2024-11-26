@@ -47,12 +47,28 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     nkpt = nimg = numpy.prod(kmesh)
 
     gx = cell.gen_uniform_grids(gmesh)
-    x4 = (lambda x: (x @ x.T) ** 2)(cell.pbc_eval_gto("GTOval", gx))
+    # x4 = (lambda x: (x @ x.T) ** 2)(cell.pbc_eval_gto("GTOval", gx))
+    x_k = cell.pbc_eval_gto("GTOval", gx, kpts=vk)
+    x_k = numpy.array(x_k)
+    x_s = phase @ x_k.reshape(nkpt, -1)
+    x_s = x_s.reshape(nimg, -1, nao)
+    assert abs(x_s.imag).max() < 1e-10
+    ng = x_s.shape[1]
+
+    x2_k = numpy.asarray([xq.conj() @ xq.T for xq in x_k])
+    assert x2_k.shape == (nkpt, ng, ng)
+
+    x2_s = phase @ x2_k.reshape(nkpt, -1)
+    x2_s = x2_s.reshape(nimg, ng, nao)
+    assert abs(x2_s.imag).max() < 1e-10
+
+    x4_s = x2_s[0] * x2_s[0]
+    assert x4_s.shape == (ng, ng)
 
     from pyscf.lib.scipy_helper import pivoted_cholesky
     chol, perm, rank = pivoted_cholesky(x4, tol=1e-32)
-    nip = int(ng * cisdf)
-    log.info("nip = %d", nip)
+    nip = min(rank, int(ng * cisdf))
+    log.info("nip = %d, rank = %d, ng = %d", nip, rank, ng)
 
     mask = perm[:nip]
     x_k = cell.pbc_eval_gto("GTOval", gx[mask], kpts=vk)
@@ -60,9 +76,9 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     nip = x_k.shape[1]
     assert x_k.shape == (nkpt, nip, nao)
 
-    x_s = phase @ x_k.reshape(nkpt, -1)
-    x_s = x_s.reshape(nimg, nip, nao)
-    assert abs(x_s.imag).max() < 1e-10
+    # x_s = phase @ x_k.reshape(nkpt, -1)
+    # x_s = x_s.reshape(nimg, nip, nao)
+    # assert abs(x_s.imag).max() < 1e-10
 
     # x_f = einsum("kIm,Rk,Sk->RISm", x_k, phase, phase.conj())
     # assert x_f.shape == (nimg, nip, nimg, nao)
@@ -81,47 +97,7 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     x4_k = x4_k.reshape(nkpt, nip, nip)
     assert x4_k.shape == (nkpt, nip, nip)
 
-    ip = set()
-    # chol = []
-    for q in range(nkpt):
-        t0 = (process_clock(), perf_counter())
-        from scipy.linalg import lapack
-        res = lapack.zpstrf(x4_k[q], lower=False)
-
-        chol = res[0]
-        chol[numpy.tril_indices(nip, k=-1)] *= 0.0
-
-        rank = res[2]
-        # perm = (res[1] - 1)[:rank]
-        perm = numpy.zeros((nip, nip))
-        perm[res[1]-1, numpy.arange(nip)] = 1
-
-        for ind in perm:
-            ip.add(ind)
-
-        tmp = res[0]
-        tmp[numpy.tril_indices(nip, k=-1)] = 0
-        chol.append(tmp)
-
-        t1 = log.timer("zpstrf[%2d]" % q, *t0)
-
-    for q in range(nkpt):
-        perm = ip
-        chol[q][chol[pe]]
-    
-    ip = list(sorted(ip))
-    log.info("Selected interpolation points pruned: %d -> %d", nip, len(ip))
-    nip = len(ip)
-    assert 1 == 2
-
-    x_k = x_k[:, ip, :]
-
-    x4_k = [x4_k[q][ip][:, ip] for q in range(nkpt)]
-    x4_k = numpy.asarray(x4_k)
-    assert x4_k.shape == (nkpt, nip, nip)
-
     t0 = (process_clock(), perf_counter())
-
     grids = df_obj.grids
     coord = grids.coords
     ngrid = coord.shape[0]
