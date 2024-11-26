@@ -81,6 +81,45 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     x4_k = x4_k.reshape(nkpt, nip, nip)
     assert x4_k.shape == (nkpt, nip, nip)
 
+    ip = set()
+    # chol = []
+    for q in range(nkpt):
+        t0 = (process_clock(), perf_counter())
+        from scipy.linalg import lapack
+        res = lapack.zpstrf(x4_k[q], lower=False)
+
+        chol = res[0]
+        chol[numpy.tril_indices(nip, k=-1)] *= 0.0
+
+        rank = res[2]
+        # perm = (res[1] - 1)[:rank]
+        perm = numpy.zeros((nip, nip))
+        perm[res[1]-1, numpy.arange(nip)] = 1
+
+        for ind in perm:
+            ip.add(ind)
+
+        tmp = res[0]
+        tmp[numpy.tril_indices(nip, k=-1)] = 0
+        chol.append(tmp)
+
+        t1 = log.timer("zpstrf[%2d]" % q, *t0)
+
+    for q in range(nkpt):
+        perm = ip
+        chol[q][chol[pe]]
+    
+    ip = list(sorted(ip))
+    log.info("Selected interpolation points pruned: %d -> %d", nip, len(ip))
+    nip = len(ip)
+    assert 1 == 2
+
+    x_k = x_k[:, ip, :]
+
+    x4_k = [x4_k[q][ip][:, ip] for q in range(nkpt)]
+    x4_k = numpy.asarray(x4_k)
+    assert x4_k.shape == (nkpt, nip, nip)
+
     t0 = (process_clock(), perf_counter())
 
     grids = df_obj.grids
@@ -141,24 +180,18 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
         phase = numpy.exp(-1j * numpy.dot(coord, vq))
         assert phase.shape == (ngrid, )
         
-        y_q = y[q, :, :]
-        assert y_q.shape == (ngrid, nip)
+        y_q = y[q, :, :].T
+        assert y_q.shape == (nip, ngrid)
 
         x4_q = x4_k[q]
         assert x4_q.shape == (nip, nip)
 
-        res = scipy.linalg.lstsq(x4_q, y_q.T, lapack_driver="gelsy")
+        # z_q = y_q
+        res = scipy.linalg.lstsq(x4_q, y_q) # , lapack_driver="gelsy")
         z_q = res[0]
         rank = res[2]
-
-        # res = scipy.linalg.pinvh(x4_q, return_rank=True)
-        # t_q = res[0]
-        # rank = res[1]
-        # z_q = t_q @ y_q.T
-
         assert z_q.shape == (nip, ngrid)
         
-        # z_q = z[q, :, :].T
         zeta_q = pbctools.fft(z_q * phase, mesh)
         zeta_q *= pbctools.get_coulG(cell, k=vq, mesh=mesh, Gv=gv)
         zeta_q *= cell.vol / ngrid
@@ -167,7 +200,11 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
         zeta_q = pbctools.ifft(zeta_q, mesh)
         zeta_q *= phase.conj()
 
-        coul_q.append(zeta_q @ z_q.conj().T)
+        j_q = zeta_q @ z_q.conj().T
+        # w_q = t_q @ j_q @ t_q.conj().T
+        w_q = j_q
+        coul_q.append(w_q)
+
         t1 = log.timer("coul[%2d], rank = %d / %d" % (q, rank, nip), *t0)
 
     coul_q = numpy.asarray(coul_q)
@@ -179,7 +216,7 @@ if __name__ == "__main__":
     cell.a = numpy.ones((3, 3)) * 3.5668 - numpy.eye(3) * 3.5668
     cell.atom = '''C     0.0000  0.0000  0.0000
                 C     0.8917  0.8917  0.8917 '''
-    cell.basis  = 'gth-szv'
+    cell.basis  = 'gth-dzvp'
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
@@ -189,12 +226,13 @@ if __name__ == "__main__":
 
     from pyscf.pbc.df.fft import FFTDF
     df_obj = FFTDF(cell)
-    # df_obj.mesh = [21, 21, 21]
+    df_obj.mesh = [15, 15, 15]
+    df_obj.verbose = 5
 
-    kmesh = [4, 4, 4]
-    # kmesh = [2, 2, 2]
+    # kmesh = [4, 4, 4]
+    kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(df_obj, kmesh=kmesh, k0=8.0, cisdf=0.8, blksize=4000)
+    c, x = get_coul(df_obj, kmesh=kmesh, k0=20.0, cisdf=0.9, blksize=1000)
     nkpt, nip, nao = x.shape
 
     from pyscf.pbc.lib.kpts_helper import get_kconserv
