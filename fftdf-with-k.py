@@ -47,12 +47,30 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     nkpt = nimg = numpy.prod(kmesh)
 
     gx = cell.gen_uniform_grids(gmesh)
-    x4 = (lambda x: (x @ x.T) ** 2)(cell.pbc_eval_gto("GTOval", gx))
+    # x4 = (lambda x: (x @ x.T) ** 2)(cell.pbc_eval_gto("GTOval", gx))
+    x_k = cell.pbc_eval_gto("GTOval", gx, kpts=vk)
+    x_k = numpy.array(x_k)
+    x_s = phase @ x_k.reshape(nkpt, -1)
+    x_s = x_s.reshape(nimg, -1, nao)
+    assert abs(x_s.imag).max() < 1e-10
+    ng = x_s.shape[1]
+
+    x2_k = numpy.asarray([xq.conj() @ xq.T for xq in x_k])
+    assert x2_k.shape == (nkpt, ng, ng)
+
+    x2_s = phase @ x2_k.reshape(nkpt, -1)
+    x2_s = x2_s.reshape(nimg, ng, nao)
+    assert abs(x2_s.imag).max() < 1e-10
+
+    x4_s = x2_s * x2_s
+    print(x4_s.shape)
+    x4 = x4_s[:ng, :ng]
 
     from pyscf.lib.scipy_helper import pivoted_cholesky
     chol, perm, rank = pivoted_cholesky(x4, tol=1e-32)
     nip = int(ng * cisdf)
-    log.info("nip = %d", nip)
+    log.info("nip = %d, rank = %d", nip, rank)
+    assert 1 == 2
 
     mask = perm[:nip]
     x_k = cell.pbc_eval_gto("GTOval", gx[mask], kpts=vk)
