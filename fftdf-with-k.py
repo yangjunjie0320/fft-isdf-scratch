@@ -55,42 +55,25 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     assert abs(x_s.imag).max() < 1e-10
     ng = x_s.shape[1]
 
-    x2_k = numpy.asarray([xq.conj() @ xq.T for xq in x_k])
-    assert x2_k.shape == (nkpt, ng, ng)
-
-    x2_s = phase @ x2_k.reshape(nkpt, -1)
-    x2_s = x2_s.reshape(nimg, ng, ng)
-    assert abs(x2_s.imag).max() < 1e-10
-
-<<<<<<< HEAD
-    x4_s = x2_s[0] * x2_s[0]
-    assert x4_s.shape == (ng, ng)
+    x2 = numpy.sum([xq.conj() @ xq.T for xq in x_k], axis=0)
+    x4 = (x2 * x2 / nkpt).real
 
     from pyscf.lib.scipy_helper import pivoted_cholesky
-    chol, perm, rank = pivoted_cholesky(x4, tol=1e-32)
-    nip = min(rank, int(ng * cisdf))
-    log.info("nip = %d, rank = %d", nip, rank)
-=======
-    x4_s = x2_s * x2_s
-    print(x4_s.shape)
-    x4 = x4_s[0]
-
-    from pyscf.lib.scipy_helper import pivoted_cholesky
-    chol, perm, rank = pivoted_cholesky(x4, tol=1e-32)
-    nip = int(ng * cisdf)
+    chol, perm, rank = pivoted_cholesky(x4)
+    # nip = int(ng * cisdf)
+    nip = min(int(ng * cisdf), rank)
     log.info("nip = %d, rank = %d, ng = %d", nip, rank, ng)
-    assert 1 == 2
->>>>>>> 9424034 (update)
+    # assert 1 == 2
 
     mask = perm[:nip]
-    x_k = cell.pbc_eval_gto("GTOval", gx[mask], kpts=vk)
-    x_k = numpy.array(x_k)
+    # x_k = cell.pbc_eval_gto("GTOval", gx[mask], kpts=vk)
+    # x_k = numpy.array(x_k)
+    # nip = x_k.shape[1]
+    x_k = x_k[:, mask, :]
+    x_s = x_s[:, mask, :]
     nip = x_k.shape[1]
     assert x_k.shape == (nkpt, nip, nao)
-
-    x_s = phase @ x_k.reshape(nkpt, -1)
-    x_s = x_s.reshape(nimg, nip, nao)
-    assert abs(x_s.imag).max() < 1e-10
+    assert x_s.shape == (nimg, nip, nao)
 
     # x_f = einsum("kIm,Rk,Sk->RISm", x_k, phase, phase.conj())
     # assert x_f.shape == (nimg, nip, nimg, nao)
@@ -193,11 +176,25 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     return coul_q, x_k
 
 if __name__ == "__main__":
-    cell   = pyscf.pbc.gto.Cell()
-    cell.a = numpy.ones((3, 3)) * 3.5668 - numpy.eye(3) * 3.5668
-    cell.atom = '''C     0.0000  0.0000  0.0000
-                C     0.8917  0.8917  0.8917 '''
-    cell.basis  = 'gth-szv'
+    # cell   = pyscf.pbc.gto.Cell()
+    # cell.a = numpy.ones((3, 3)) * 3.5668 - numpy.eye(3) * 3.5668
+    # cell.atom = '''C     0.0000  0.0000  0.0000
+    #             C     0.8917  0.8917  0.8917 '''
+    # cell.basis  = 'gth-szv'
+    # cell.pseudo = 'gth-pade'
+    # cell.verbose = 0
+    # cell.unit = 'aa'
+    # cell.ke_cutoff = 50
+    # cell.max_memory = PYSCF_MAX_MEMORY
+    # cell.build(dump_input=False)
+
+    from ase.build import bulk
+    atoms = bulk("NiO", "rocksalt", a=4.18)
+
+    from pyscf.pbc.gto import Cell
+    cell = Cell()
+    cell.atom = atoms
+    cell.basis = 'opt
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
