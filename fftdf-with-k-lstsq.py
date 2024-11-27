@@ -59,16 +59,17 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
     assert x2_k.shape == (nkpt, ng, ng)
 
     x2_s = phase @ x2_k.reshape(nkpt, -1)
-    x2_s = x2_s.reshape(nimg, ng, nao)
+    x2_s = x2_s.reshape(nimg, ng, ng)
     assert abs(x2_s.imag).max() < 1e-10
 
-    x4_s = x2_s[0] * x2_s[0]
-    assert x4_s.shape == (ng, ng)
+    x4 = x2_s[0] * x2_s[0]
+    x4 = x4.real
+    assert x4.shape == (ng, ng)
 
     from pyscf.lib.scipy_helper import pivoted_cholesky
     chol, perm, rank = pivoted_cholesky(x4, tol=1e-32)
-    nip = min(rank, int(ng * cisdf))
-    log.info("nip = %d, rank = %d, ng = %d", nip, rank, ng)
+    nip = min(rank, 600) # int(ng * cisdf))
+    log.info("nao = %d, nip = %d, rank = %d, ng = %d", nao, nip, rank, ng)
 
     mask = perm[:nip]
     x_k = cell.pbc_eval_gto("GTOval", gx[mask], kpts=vk)
@@ -204,9 +205,9 @@ if __name__ == "__main__":
     df_obj = FFTDF(cell)
     df_obj.verbose = 5
 
-    kmesh = [2, 2, 2]
+    kmesh = [4, 4, 4]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(df_obj, kmesh=kmesh, k0=10.0, cisdf=0.9, blksize=40000)
+    c, x = get_coul(df_obj, kmesh=kmesh, k0=20.0, cisdf=0.2, blksize=40000)
     nkpt, nip, nao = x.shape
 
     from pyscf.pbc.lib.kpts_helper import get_kconserv
