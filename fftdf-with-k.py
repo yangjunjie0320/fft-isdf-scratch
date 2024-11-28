@@ -17,22 +17,26 @@ PYSCF_MAX_MEMORY = int(os.environ.get("PYSCF_MAX_MEMORY", 160000))
 
 import line_profiler
 @line_profiler.profile
-def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
+def get_coul(df_obj, m0=None, nip=100, kmesh=None, verbose=5, blksize=16000):
     log = logger.new_logger(df_obj, verbose)
     cell = df_obj.cell
 
     if kmesh is None:
         kmesh = [1, 1, 1]
 
+    if m0 is None:
+        m0 = [15, 15, 15]
+
     from pyscf.pbc.tools.k2gamma import get_phase
     vk = df_obj.cell.get_kpts(kmesh)
     sc, phase = get_phase(df_obj.cell, vk, kmesh=kmesh, wrap_around=False)
 
-    lv = df_obj.cell.lattice_vectors()
-    gmesh = pbctools.cutoff_to_mesh(lv, k0)
-    ng = numpy.prod(gmesh)
+    nao = cell.nao_nr()
+    nkpt = nimg = numpy.prod(kmesh)
 
-    log.info("Parent grid: gmesh = %s, ng = %d", gmesh, ng)
+    ng = numpy.prod(m0)
+    log.info("Parent grid: gmesh = %s, ng = %d, nao = %d, nkpt = %d, nimg = %d",
+             m0, ng, nao, nkpt, nimg)
 
     max_memory = cell.max_memory - current_memory()[0]
     required_memory = ng * ng * 16 / 1e6
@@ -43,11 +47,7 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
         info += "Required memory = %d MB." % required_memory
         raise RuntimeError(info)
 
-    nao = cell.nao_nr()
-    nkpt = nimg = numpy.prod(kmesh)
-
-    gx = cell.gen_uniform_grids(gmesh)
-    # x4 = (lambda x: (x @ x.T) ** 2)(cell.pbc_eval_gto("GTOval", gx))
+    gx = cell.gen_uniform_grids(m0)
     x_k = cell.pbc_eval_gto("GTOval", gx, kpts=vk)
     x_k = numpy.array(x_k)
     x_s = phase @ x_k.reshape(nkpt, -1)
@@ -60,15 +60,10 @@ def get_coul(df_obj, k0=10.0, kmesh=None, cisdf=0.6, verbose=5, blksize=16000):
 
     from pyscf.lib.scipy_helper import pivoted_cholesky
     chol, perm, rank = pivoted_cholesky(x4)
-    # nip = int(ng * cisdf)
-    nip = min(int(ng * cisdf), rank)
+    nip = min(nip, rank)
     log.info("nip = %d, rank = %d, ng = %d", nip, rank, ng)
-    # assert 1 == 2
-
     mask = perm[:nip]
-    # x_k = cell.pbc_eval_gto("GTOval", gx[mask], kpts=vk)
-    # x_k = numpy.array(x_k)
-    # nip = x_k.shape[1]
+
     x_k = x_k[:, mask, :]
     x_s = x_s[:, mask, :]
     nip = x_k.shape[1]
@@ -192,24 +187,26 @@ if __name__ == "__main__":
     atoms = bulk("NiO", "rocksalt", a=4.18)
 
     from pyscf.pbc.gto import Cell
+    from pyscf.pbc.tools.pyscf_ase import ase_atoms_to_pyscf
+
     cell = Cell()
-    cell.atom = atoms
-    cell.basis = 'opt
+    cell.atom = ase_atoms_to_pyscf(atoms)
+    cell.a = numpy.array(atoms.cell)
+    cell.basis = 'gth-szv-molopt-sr'
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 50
+    cell.ke_cutoff = 200
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
     from pyscf.pbc.df.fft import FFTDF
     df_obj = FFTDF(cell)
-    # df_obj.mesh = [21, 21, 21]
 
     # kmesh = [4, 4, 4]
     kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
-    c, x = get_coul(df_obj, kmesh=kmesh, k0=8.0, cisdf=0.9, blksize=4000)
+    c, x = get_coul(df_obj, m0=[15, 15, 15], nip=800, kmesh=kmesh, blksize=4000)
     nkpt, nip, nao = x.shape
 
     from pyscf.pbc.lib.kpts_helper import get_kconserv
