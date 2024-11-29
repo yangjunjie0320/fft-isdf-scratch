@@ -11,8 +11,7 @@ from pyscf.lib.logger import process_clock, perf_counter
 
 from pyscf.pbc.df.fft import FFTDF
 from pyscf.pbc import tools as pbctools
-import pyscf.pbc.gto as pbcgto
-import pyscf.pbc.dft as pbcdft
+from pyscf.pbc.lib.kpts_helper import is_zero
 
 PYSCF_MAX_MEMORY = int(os.environ.get("PYSCF_MAX_MEMORY", 160000))
 
@@ -72,13 +71,8 @@ def build(df_obj):
     required_memory = blksize * nip * nkpt * 16 / 1e6
     log.info("Required memory = %d MB", required_memory)
     
-    ni = df_obj._numint
-    g0g1 = range(0, ngrid, blksize)
-    
     t0 = (process_clock(), perf_counter())
-    block_loop = ni.block_loop(pcell, grids, nao, deriv=0, kpts=vk, blksize=blksize)
-    for ig, ao_k_etc in enumerate(block_loop):
-        g0, g1 = g0g1[ig:ig+2]
+    for ao_k_etc, g0, g1 in df_obj.aoR_loop(grids, vk, 0, blksize=blksize):
         f_k = numpy.asarray(ao_k_etc[0])
         assert f_k.shape == (nkpt, g1 - g0, nao)
 
@@ -94,8 +88,8 @@ def build(df_obj):
         y[:, g0:g1, :] = y_k.reshape(nkpt, g1 - g0, nip)
 
         log.debug("finished aoR_loop[%8d:%8d]", g0, g1)
-    t1 = log.timer("building y", *t0)
 
+    t1 = log.timer("building y", *t0)
     mesh = df_obj.mesh
     gv = pcell.get_Gv(mesh)
     
@@ -105,8 +99,8 @@ def build(df_obj):
     coul_q = []
     for q, vq in enumerate(vk):
         t0 = (process_clock(), perf_counter())
-        phase = numpy.exp(-1j * numpy.dot(coord, vq))
-        assert phase.shape == (ngrid, )
+        fq = numpy.exp(-1j * numpy.dot(coord, vq))
+        assert fq.shape == (ngrid, )
         
         y_q = y[q, :, :]
         assert y_q.shape == (ngrid, nip)
@@ -120,21 +114,100 @@ def build(df_obj):
         assert z_q.shape == (nip, ngrid)
         
         # z_q = z[q, :, :].T
-        zeta_q = pbctools.fft(z_q * phase, mesh)
+        zeta_q = pbctools.fft(z_q * fq, mesh)
         zeta_q *= pbctools.get_coulG(pcell, k=vq, mesh=mesh, Gv=gv)
         zeta_q *= pcell.vol / ngrid
         assert zeta_q.shape == (nip, ngrid)
 
         zeta_q = pbctools.ifft(zeta_q, mesh)
-        zeta_q *= phase.conj()
+        zeta_q *= fq.conj()
 
         coul_q.append(zeta_q @ z_q.conj().T)
         t1 = log.timer("coul[%2d], rank = %d / %d" % (q, rank, nip), *t0)
 
-    return xip, coul_q
+    coul_q = numpy.asarray(coul_q)
+    df_obj._x = xip
+    df_obj._w0 = coul_q[0]
+    df_obj._w = phase @ coul_q.reshape(nkpt, -1)
+    df_obj._w = df_obj._w.reshape(nimg, nip, nip)
+    df_obj._ip = xip
+
+def get_j_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=None):
+    df_obj = df_obj
+    cell = df_obj.cell
+    mesh = df_obj.mesh
+    assert cell.low_dim_ft_type != 'inf_vacuum'
+    assert cell.dimension > 1
+
+    from pyscf import lib
+    dm_kpts = lib.asarray(dm_kpts, order='C')
+
+    from pyscf.pbc.df.df_jk import _format_dms
+    dms = _format_dms(dm_kpts, kpts)
+    nset, nkpt, nao = dms.shape[:3]
+
+    assert df_obj._x is not None
+    assert df_obj._w is not None
+
+    nip = df_obj._x.shape[1]
+    assert df_obj._x.shape == (nkpt, nip, nao)  
+    assert df_obj._w.shape == (nkpt, nip, nip)
+
+    rhoR = numpy.einsum("kIm,kIn,xkmn->xI", df_obj._x, df_obj._x, dms, optimize=True)
+    rhoR *= 1.0 / nkpt
+    assert rhoR.shape == (nset, nip)
+
+    vR = numpy.einsum("IJ,xJ->xI", df_obj._w[0], rhoR, optimize=True)
+    assert vR.shape == (nset, nip)
+
+    from pyscf.pbc.df.df_jk import _format_kpts_band
+    kpts_band, input_band = _format_kpts_band(kpts_band, kpts), kpts_band
+    nband = len(kpts_band)
+    assert nband == nkpt
+
+    vj_kpts = numpy.einsum("kIm,kIn,xI->xkmn", df_obj._x, df_obj._x, vR, optimize=True)
+    assert vj_kpts.shape == (nset, nkpt, nao, nao)
+
+    if is_zero(kpts_band):
+        vj_kpts = vj_kpts.real
+    return vj_kpts
+
+def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=None):
+    df_obj = df_obj
+    cell = df_obj.cell
+    mesh = df_obj.mesh
+    assert cell.low_dim_ft_type != 'inf_vacuum'
+    assert cell.dimension > 1
+
+    from pyscf import lib
+    dm_kpts = lib.asarray(dm_kpts, order='C')
+
+    from pyscf.pbc.df.df_jk import _format_dms
+    dms = _format_dms(dm_kpts, kpts)
+    nset, nkpt, nao = dms.shape[:3]
+
+    assert df_obj._x is not None
+    assert df_obj._w is not None
+
+    nip = df_obj._x.shape[1]
+    assert df_obj._x.shape == (nkpt, nip, nao)  
+    assert df_obj._w.shape == (nkpt, nip, nip)
+
+    rho_k = numpy.einsum("kIm,kIn,xkmn->xkI", df_obj._x, df_obj._x, dms, optimize=True)
+    rho_k *= 1.0 / nkpt
+
+    phase = numpy.exp(-1j * numpy.dot(coord, vq))
+    assert phase.shape == (ngrid, )
+
+    vk_s = phase.T @ rho_k.reshape(nkpt, -1)
+    vk_s = vk_s.reshape(nimg, nip, ngrid)
+    assert vk_s.shape == (nimg, nip, ngrid)
+
 
 class InterpolativeSeparableDensityFitting(FFTDF):
-    blksize = 8000 # block size for the aoR_loop
+    _x = None
+    _w = None
+    blksize = 8000  # block size for the aoR_loop
 
     def __init__(self, cell, kpts, m0=None, c0=20.0):
         super().__init__(cell, kpts)
@@ -145,10 +218,42 @@ class InterpolativeSeparableDensityFitting(FFTDF):
     def build(self):
         return build(self)
     
+    def aoR_loop(self, grids=None, kpts=None, deriv=0, blksize=None):
+        if grids is None:
+            grids = self.grids
+            cell = self.cell
+        else:
+            cell = grids.cell
+
+        if grids.non0tab is None:
+            grids.build(with_non0tab=True)
+
+        if blksize is None:
+            blksize = self.blksize
+
+        if kpts is None: kpts = self.kpts
+        kpts = numpy.asarray(kpts)
+
+        assert cell.dimension == 3
+
+        max_memory = max(2000, self.max_memory - current_memory()[0])
+
+        ni = self._numint
+        nao = cell.nao_nr()
+        p1 = 0
+        for ao_k1_etc in ni.block_loop(cell, grids, nao, deriv, kpts,
+                                       max_memory=max_memory,
+                                       blksize=blksize):
+            coords = ao_k1_etc[4]
+            p0, p1 = p1, p1 + coords.shape[0]
+            yield ao_k1_etc, p0, p1
+    
     def select_interpolation_points(self, x0=None, phase=None):
         c0 = self.c0
         m0 = self.m0
 
+        log = logger.new_logger(self, self.verbose)
+        t0 = (process_clock(), perf_counter())
         # the primitive cell
         pcell = self.cell
         nao = pcell.nao_nr()
@@ -171,6 +276,9 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         chol, perm, rank = pivoted_cholesky(x4)
         nip = min(int(nao * c0), rank)
         mask = perm[:nip]
+
+        t1 = log.timer("select_interpolation_points", *t0)
+        log.info("Pivoted Cholesky rank = %d, nip = %d, estimated error = %6.2e", rank, nip, chol[nip, nip])
         return x0[:, mask, :]
     
 ISDF = InterpolativeSeparableDensityFitting
@@ -200,5 +308,19 @@ if __name__ == "__main__":
     kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
 
-    isdf = ISDF(cell, kpts=cell.get_kpts(kmesh))
-    xip, coul_q = isdf.build()
+    df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
+    df_obj.verbose = 5
+    df_obj.c0 = 40.0
+    df_obj.m0 = [11, 11, 11]
+    df_obj.build()
+
+    nao = cell.nao_nr()
+
+    scf_obj = pyscf.pbc.scf.KRHF(cell, kpts=cell.get_kpts(kmesh))
+    dm_kpts = scf_obj.get_init_guess()
+
+    vj1 = get_j_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)
+    vj2 = df_obj.get_jk(dm_kpts, with_j=True, with_k=False)[0]
+
+    err = abs(vj1 - vj2).max()
+    print("c0 = % 6.4f, err = % 6.4f" % (df_obj.c0, err))
