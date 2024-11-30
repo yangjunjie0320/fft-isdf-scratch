@@ -347,7 +347,7 @@ if __name__ == "__main__":
 
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
     df_obj.verbose = 5
-    df_obj.c0 = 20.0
+    df_obj.c0 = 40.0
     df_obj.m0 = [15, 15, 15]
     df_obj.build()
 
