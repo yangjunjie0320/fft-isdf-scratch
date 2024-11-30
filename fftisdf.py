@@ -185,13 +185,6 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     nao = pcell.nao_nr()
     nkpt = nimg = numpy.prod(kmesh)
 
-    if getattr(dm_kpts, 'mo_coeff', None) is not None:
-        mo_coeff = dm_kpts.mo_coeff
-        mo_occ   = dm_kpts.mo_occ
-    else:
-        mo_coeff = None
-        mo_occ = None
-
     dm_kpts = lib.asarray(dm_kpts, order='C')
     dms = _format_dms(dm_kpts, kpts)
     nset, nkpt, nao = dms.shape[:3]
@@ -208,47 +201,26 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     assert df_obj._x.shape == (nkpt, nip, nao)
     assert df_obj._wq.shape == (nkpt, nip, nip)
 
-    # vk_kpts = []
-    # for i in range(nset):
-    #     rho_k = numpy.einsum("kIm,kJn,kmn->kIJ", df_obj._x, df_obj._x.conj(), dms[i], optimize=True)
-    #     rho_k *= 1.0 / nkpt
-    #     assert rho_k.shape == (nkpt, nip, nip)
-
-    #     rho_s = phase @ rho_k.reshape(nkpt, -1)
-    #     rho_s = rho_s.reshape(nimg, nip, nip)
-    #     assert abs(rho_s.imag).max() < 1e-10
-
-    #     v_s = df_obj._ws * rho_s
-    #     v_k = phase.conj().T @ v_s.reshape(nimg, -1)
-    #     v_k = v_k.reshape(nkpt, nip, nip)
-    #     assert v_k.shape == (nkpt, nip, nip)
-
-    #     vk_kpts.append(
-    #         numpy.einsum("kIm,kIn,kIJ->kmn", df_obj._x.conj(), df_obj._x, v_k, optimize=True)
-    #     )
-    assert nset == 1
-    dm = dms[0]
-
-    rho = numpy.einsum("kmn,kIm,kJn->kIJ", dm, df_obj._x, df_obj._x.conj(), optimize=True)
-    rho *= 1.0 / nkpt
-    assert rho.shape == (nkpt, nip, nip)
-
-    # from pyscf.pbc.df.df_jk import get_kconserv_ria
     from pyscf.pbc.lib.kpts_helper import get_kconserv_ria
     kconserv2 = get_kconserv_ria(cell, df_obj.kpts)
 
     vk_kpts = []
+    for dm in dms:
+        rho = [x @ d @ x.conj().T for x, d in zip(df_obj._x, dm)]
+        rho = numpy.asarray(rho) / nkpt
+        assert rho.shape == (nkpt, nip, nip)
 
-    for k1 in range(nkpt):
-        xk1 = df_obj._x[k1]
-        vk_k1 = numpy.zeros_like(dm[k1], dtype=numpy.complex128)
-        for k2 in range(nkpt):
-            q = kconserv2[k1, k2]
-            v = df_obj._wq[q] * rho[k2]
-            vk_k1 += numpy.einsum("IJ,Im,Jn->mn", v, xk1.conj(), xk1, optimize=True)
-        vk_kpts.append(vk_k1)
+        vk_kpts = []
+        for k1 in range(nkpt):
+            xk1 = df_obj._x[k1]
+            vk_k1 = numpy.zeros_like(dm[k1], dtype=numpy.complex128)
+            for k2 in range(nkpt):
+                q = kconserv2[k1, k2]
+                v = df_obj._wq[q] * rho[k2]
+                vk_k1 += xk1.conj().T @ v @ xk1
+            vk_kpts.append(vk_k1)
 
-    vk_kpts = numpy.asarray(vk_kpts).reshape(nkpt, nao, nao)
+        vk_kpts = numpy.asarray(vk_kpts).reshape(nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
 
 class InterpolativeSeparableDensityFitting(FFTDF):
@@ -369,13 +341,13 @@ if __name__ == "__main__":
     from pyscf.pbc.df.fft import FFTDF
     df_obj = FFTDF(cell)
 
-    # kmesh = [4, 4, 4]
-    kmesh = [2, 2, 2]
+    kmesh = [4, 4, 4]
+    # kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
 
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
     df_obj.verbose = 5
-    df_obj.c0 = 40.0
+    df_obj.c0 = 20.0
     df_obj.m0 = [15, 15, 15]
     df_obj.build()
 
@@ -385,7 +357,7 @@ if __name__ == "__main__":
     dm_kpts = scf_obj.get_init_guess()
 
     log = logger.new_logger(df_obj, df_obj.verbose)
-    
+
     t0 = (process_clock(), perf_counter())
     vj1 = get_j_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
     vk1 = get_k_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
@@ -394,17 +366,6 @@ if __name__ == "__main__":
     t0 = (process_clock(), perf_counter())
     vj2, vk2 = df_obj.get_jk(dm_kpts, with_j=True, with_k=True)
     t1 = log.timer("get_jk", *t0)
-
-    assert vj1.shape == vj2.shape
-    assert vk1.shape == vk2.shape
-
-    print(f"{vk1.shape = }, {vk2.shape = }")
-
-    print(f"\n{vk1.shape = }")
-    numpy.savetxt(cell.stdout, vk1[0].real, fmt="% 6.4f", delimiter=", ")
-
-    print(f"\n{vk2.shape = }")
-    numpy.savetxt(cell.stdout, vk2[0].real, fmt="% 6.4f", delimiter=", ")
 
     err = abs(vj1 - vj2).max()
     print("c0 = % 6.4f, vj err = % 6.4e" % (df_obj.c0, err))
