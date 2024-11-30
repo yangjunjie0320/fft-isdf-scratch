@@ -6,6 +6,7 @@ from opt_einsum import contract as einsum
 import scipy.linalg
 
 import pyscf
+from pyscf import lib
 from pyscf.lib import logger, current_memory
 from pyscf.lib.logger import process_clock, perf_counter
 
@@ -13,22 +14,18 @@ from pyscf.pbc.df.fft import FFTDF
 from pyscf.pbc import tools as pbctools
 from pyscf.pbc.lib.kpts_helper import is_zero
 
+from pyscf.pbc.tools.k2gamma import get_phase
+from pyscf.pbc.df.df_jk import _format_dms, _format_kpts_band, _format_jks
+
 PYSCF_MAX_MEMORY = int(os.environ.get("PYSCF_MAX_MEMORY", 160000))
 
 def build(df_obj):
     log = logger.new_logger(df_obj, df_obj.verbose)
     pcell = df_obj.cell
 
-    from pyscf.pbc.tools.k2gamma import kpts_to_kmesh
-    kmesh = kpts_to_kmesh(pcell, df_obj.kpts)
-    log.debug("\nTransform kpts to kmesh")
-    log.debug("original    kpts  =\n %s", df_obj.kpts)
-    log.debug("transformed kmesh = %s", kmesh)
-
-    from pyscf.pbc.tools.k2gamma import get_phase
-    vk = pcell.get_kpts(kmesh)
+    kmesh = df_obj.kmesh
+    vk = df_obj.kpts
     scell, phase = get_phase(pcell, vk, kmesh=kmesh, wrap_around=False)
-    log.debug("transformed kpts =\n %s", vk)
 
     nao = pcell.nao_nr()
     nkpt = nimg = numpy.prod(kmesh)
@@ -96,7 +93,7 @@ def build(df_obj):
     required_memory = nip * ngrid * 16 / 1e6
     log.info("Required memory = %d MB", required_memory)
 
-    coul_q = []
+    wq = []
     for q, vq in enumerate(vk):
         t0 = (process_clock(), perf_counter())
         fq = numpy.exp(-1j * numpy.dot(coord, vq))
@@ -122,87 +119,119 @@ def build(df_obj):
         zeta_q = pbctools.ifft(zeta_q, mesh)
         zeta_q *= fq.conj()
 
-        coul_q.append(zeta_q @ z_q.conj().T)
+        wq.append(zeta_q @ z_q.conj().T)
         t1 = log.timer("coul[%2d], rank = %d / %d" % (q, rank, nip), *t0)
 
-    coul_q = numpy.asarray(coul_q)
+    wq = numpy.asarray(wq).reshape(nkpt, nip, nip)
     df_obj._x = xip
-    df_obj._w0 = coul_q[0]
-    df_obj._w = phase @ coul_q.reshape(nkpt, -1)
-    df_obj._w = df_obj._w.reshape(nimg, nip, nip)
-    df_obj._ip = xip
+    df_obj._w0 = wq[0]
+    df_obj._ws = phase @ wq.reshape(nkpt, -1)
+    df_obj._ws = df_obj._ws.reshape(nimg, nip, nip)
+    ws = df_obj._ws
+    # print(f"{ws.shape = }")
+    # print(f"{abs(ws.imag).max() = }")
+    # assert abs(df_obj._ws.imag).max() < 1e-10, "ws should be real"
+    df_obj._ws = df_obj._ws
 
-def get_j_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=None):
-    df_obj = df_obj
+def get_j_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=None,
+               exxdiv=None):
+    log = logger.new_logger(df_obj, df_obj.verbose)
     cell = df_obj.cell
     mesh = df_obj.mesh
     assert cell.low_dim_ft_type != 'inf_vacuum'
     assert cell.dimension > 1
+    pcell = df_obj.cell
 
-    from pyscf import lib
+    assert exxdiv is None
+    kpts = numpy.asarray(kpts)
     dm_kpts = lib.asarray(dm_kpts, order='C')
-
-    from pyscf.pbc.df.df_jk import _format_dms
     dms = _format_dms(dm_kpts, kpts)
     nset, nkpt, nao = dms.shape[:3]
 
     assert df_obj._x is not None
-    assert df_obj._w is not None
+    assert df_obj._w0 is not None
 
     nip = df_obj._x.shape[1]
-    assert df_obj._x.shape == (nkpt, nip, nao)  
-    assert df_obj._w.shape == (nkpt, nip, nip)
+    assert df_obj._x.shape  == (nkpt, nip, nao)  
+    assert df_obj._w0.shape == (nip, nip)
 
-    rhoR = numpy.einsum("kIm,kIn,xkmn->xI", df_obj._x, df_obj._x, dms, optimize=True)
-    rhoR *= 1.0 / nkpt
-    assert rhoR.shape == (nset, nip)
+    rho = numpy.einsum("kIm,kIn,xkmn->xI", df_obj._x, df_obj._x, dms, optimize=True)
+    rho *= 1.0 / nkpt
+    assert rho.shape == (nset, nip)
 
-    vR = numpy.einsum("IJ,xJ->xI", df_obj._w[0], rhoR, optimize=True)
-    assert vR.shape == (nset, nip)
+    v = numpy.einsum("IJ,xJ->xI", df_obj._w0, rho, optimize=True)
+    assert v.shape == (nset, nip)
 
-    from pyscf.pbc.df.df_jk import _format_kpts_band
     kpts_band, input_band = _format_kpts_band(kpts_band, kpts), kpts_band
     nband = len(kpts_band)
     assert nband == nkpt
 
-    vj_kpts = numpy.einsum("kIm,kIn,xI->xkmn", df_obj._x, df_obj._x, vR, optimize=True)
+    vj_kpts = numpy.einsum("kIm,kIn,xI->xkmn", df_obj._x, df_obj._x, v, optimize=True)
     assert vj_kpts.shape == (nset, nkpt, nao, nao)
 
     if is_zero(kpts_band):
         vj_kpts = vj_kpts.real
-    return vj_kpts
+    return _format_jks(vj_kpts, dms, input_band, kpts)
 
-def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=None):
-    df_obj = df_obj
+def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=None,
+               exxdiv=None):
+    log = logger.new_logger(df_obj, df_obj.verbose)
     cell = df_obj.cell
     mesh = df_obj.mesh
     assert cell.low_dim_ft_type != 'inf_vacuum'
     assert cell.dimension > 1
 
-    from pyscf import lib
-    dm_kpts = lib.asarray(dm_kpts, order='C')
+    pcell = df_obj.cell
+    kmesh = df_obj.kmesh
+    scell, phase = get_phase(pcell, df_obj.kpts, kmesh=kmesh, wrap_around=False)
 
-    from pyscf.pbc.df.df_jk import _format_dms
+    nao = pcell.nao_nr()
+    nkpt = nimg = numpy.prod(kmesh)
+
+    if getattr(dm_kpts, 'mo_coeff', None) is not None:
+        mo_coeff = dm_kpts.mo_coeff
+        mo_occ   = dm_kpts.mo_occ
+    else:
+        mo_coeff = None
+        mo_occ = None
+
+    dm_kpts = lib.asarray(dm_kpts, order='C')
     dms = _format_dms(dm_kpts, kpts)
     nset, nkpt, nao = dms.shape[:3]
 
+    kpts_band, input_band = _format_kpts_band(kpts_band, kpts), kpts_band
+    nband = len(kpts_band)
+    assert nband == nkpt # not supporting kpts_band
+    assert exxdiv is None
+
     assert df_obj._x is not None
-    assert df_obj._w is not None
+    assert df_obj._ws is not None
 
     nip = df_obj._x.shape[1]
-    assert df_obj._x.shape == (nkpt, nip, nao)  
-    assert df_obj._w.shape == (nkpt, nip, nip)
+    assert df_obj._x.shape == (nkpt, nip, nao)
+    assert df_obj._ws.shape == (nimg, nip, nip)
 
-    rho_k = numpy.einsum("kIm,kIn,xkmn->xkI", df_obj._x, df_obj._x, dms, optimize=True)
-    rho_k *= 1.0 / nkpt
+    vk_kpts = []
+    for i in range(nset):
+        rho_k = numpy.einsum("kIm,kJn,kmn->kIJ", df_obj._x, df_obj._x.conj(), dms[i], optimize=True)
+        rho_k *= 1.0 / nkpt
+        assert rho_k.shape == (nkpt, nip, nip)
 
-    phase = numpy.exp(-1j * numpy.dot(coord, vq))
-    assert phase.shape == (ngrid, )
+        rho_s = phase @ rho_k.reshape(nkpt, -1)
+        rho_s = rho_s.reshape(nimg, nip, nip)
+        assert abs(rho_s.imag).max() < 1e-10
 
-    vk_s = phase.T @ rho_k.reshape(nkpt, -1)
-    vk_s = vk_s.reshape(nimg, nip, ngrid)
-    assert vk_s.shape == (nimg, nip, ngrid)
+        v_s = df_obj._ws * rho_s
+        v_k = phase.conj().T @ v_s.reshape(nimg, -1)
+        v_k = v_k.reshape(nkpt, nip, nip)
+        assert v_k.shape == (nkpt, nip, nip)
 
+        vk_kpts.append(
+            numpy.einsum("kIm,kIn,kIJ->kmn", df_obj._x.conj(), df_obj._x, v_k, optimize=True)
+        )
+
+    vk_kpts = numpy.asarray(vk_kpts)
+    return _format_jks(vk_kpts, dms, input_band, kpts)
 
 class InterpolativeSeparableDensityFitting(FFTDF):
     _x = None
@@ -216,6 +245,22 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         self.c0 = c0
 
     def build(self):
+        log = logger.new_logger(self, self.verbose)
+        log.info("\n")
+        log.info("******** %s ********", self.__class__)
+        log.info("method = %s", self.__class__.__name__)
+
+        log.info("Transform kpts to kmesh")
+        log.info("original    kpts  =\n %s", self.kpts)
+        
+        from pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+        kmesh = kpts_to_kmesh(self.cell, self.kpts)
+        self.kmesh = kmesh
+        log.info("transformed kmesh = %s", kmesh)
+
+        self.kpts = cell.get_kpts(kmesh)
+        log.info("transformed kpts =\n %s", self.kpts)
+
         return build(self)
     
     def aoR_loop(self, grids=None, kpts=None, deriv=0, blksize=None):
@@ -285,7 +330,8 @@ ISDF = InterpolativeSeparableDensityFitting
 
 if __name__ == "__main__":
     from ase.build import bulk
-    atoms = bulk("NiO", "rocksalt", a=4.18)
+    # atoms = bulk("NiO", "rocksalt", a=4.18)
+    atoms = bulk("C", "diamond", a=3.567)
 
     from pyscf.pbc.gto import Cell
     from pyscf.pbc.tools.pyscf_ase import ase_atoms_to_pyscf
@@ -310,8 +356,8 @@ if __name__ == "__main__":
 
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
     df_obj.verbose = 5
-    df_obj.c0 = 40.0
-    df_obj.m0 = [11, 11, 11]
+    df_obj.c0 = 20.0
+    df_obj.m0 = [15, 15, 15]
     df_obj.build()
 
     nao = cell.nao_nr()
@@ -319,8 +365,22 @@ if __name__ == "__main__":
     scf_obj = pyscf.pbc.scf.KRHF(cell, kpts=cell.get_kpts(kmesh))
     dm_kpts = scf_obj.get_init_guess()
 
-    vj1 = get_j_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)
-    vj2 = df_obj.get_jk(dm_kpts, with_j=True, with_k=False)[0]
+    vj1 = get_j_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
+    vk1 = get_k_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
+    vj2, vk2 = df_obj.get_jk(dm_kpts, with_j=True, with_k=True)
+
+    assert vj1.shape == vj2.shape
+    assert vk1.shape == vk2.shape
+
+    print(f"{vk1.shape = }, {vk2.shape = }")
+
+    print(f"\n{vk1.shape = }")
+    numpy.savetxt(cell.stdout, vk1[0].real, fmt="% 6.4f", delimiter=", ")
+
+    print(f"\n{vk2.shape = }")
+    numpy.savetxt(cell.stdout, vk2[0].real, fmt="% 6.4f", delimiter=", ")
 
     err = abs(vj1 - vj2).max()
-    print("c0 = % 6.4f, err = % 6.4f" % (df_obj.c0, err))
+    print("c0 = % 6.4f, vj err = % 6.4e" % (df_obj.c0, err))
+    err = abs(vk1 - vk2).max()
+    print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
