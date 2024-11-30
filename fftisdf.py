@@ -110,7 +110,6 @@ def build(df_obj):
         rank = res[2]
         assert z_q.shape == (nip, ngrid)
         
-        # z_q = z[q, :, :].T
         zeta_q = pbctools.fft(z_q * fq, mesh)
         zeta_q *= pbctools.get_coulG(pcell, k=vq, mesh=mesh, Gv=gv)
         zeta_q *= pcell.vol / ngrid
@@ -120,18 +119,16 @@ def build(df_obj):
         zeta_q *= fq.conj()
 
         wq.append(zeta_q @ z_q.conj().T)
-        t1 = log.timer("coul[%2d], rank = %d / %d" % (q, rank, nip), *t0)
+        t1 = log.timer("w[%3d], rank = %4d / %4d" % (q, rank, nip), *t0)
 
     wq = numpy.asarray(wq).reshape(nkpt, nip, nip)
     df_obj._x = xip
+
     df_obj._w0 = wq[0]
-    df_obj._ws = phase @ wq.reshape(nkpt, -1)
-    df_obj._ws = df_obj._ws.reshape(nimg, nip, nip)
-    ws = df_obj._ws
-    # print(f"{ws.shape = }")
-    # print(f"{abs(ws.imag).max() = }")
-    # assert abs(df_obj._ws.imag).max() < 1e-10, "ws should be real"
-    df_obj._ws = df_obj._ws
+    df_obj._wq = wq
+
+    # df_obj._ws = phase @ wq.reshape(nkpt, -1)
+    # df_obj._ws = df_obj._ws.reshape(nimg, nip, nip)
 
 def get_j_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=None,
                exxdiv=None):
@@ -205,37 +202,72 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     assert exxdiv is None
 
     assert df_obj._x is not None
-    assert df_obj._ws is not None
+    assert df_obj._wq is not None
 
     nip = df_obj._x.shape[1]
     assert df_obj._x.shape == (nkpt, nip, nao)
-    assert df_obj._ws.shape == (nimg, nip, nip)
+    assert df_obj._wq.shape == (nkpt, nip, nip)
+
+    # vk_kpts = []
+    # for i in range(nset):
+    #     rho_k = numpy.einsum("kIm,kJn,kmn->kIJ", df_obj._x, df_obj._x.conj(), dms[i], optimize=True)
+    #     rho_k *= 1.0 / nkpt
+    #     assert rho_k.shape == (nkpt, nip, nip)
+
+    #     rho_s = phase @ rho_k.reshape(nkpt, -1)
+    #     rho_s = rho_s.reshape(nimg, nip, nip)
+    #     assert abs(rho_s.imag).max() < 1e-10
+
+    #     v_s = df_obj._ws * rho_s
+    #     v_k = phase.conj().T @ v_s.reshape(nimg, -1)
+    #     v_k = v_k.reshape(nkpt, nip, nip)
+    #     assert v_k.shape == (nkpt, nip, nip)
+
+    #     vk_kpts.append(
+    #         numpy.einsum("kIm,kIn,kIJ->kmn", df_obj._x.conj(), df_obj._x, v_k, optimize=True)
+    #     )
+    assert nset == 1
+    dm = dms[0]
+
+    rho = numpy.einsum("kmn,kIm,kJn->kIJ", dm, df_obj._x, df_obj._x.conj(), optimize=True)
+    rho *= 1.0 / nkpt
+    assert rho.shape == (nkpt, nip, nip)
+
+    # from pyscf.pbc.df.df_jk import get_kconserv_ria
+    from pyscf.pbc.lib.kpts_helper import get_kconserv_ria
+    kconserv2 = get_kconserv_ria(cell, df_obj.kpts)
 
     vk_kpts = []
-    for i in range(nset):
-        rho_k = numpy.einsum("kIm,kJn,kmn->kIJ", df_obj._x, df_obj._x.conj(), dms[i], optimize=True)
-        rho_k *= 1.0 / nkpt
-        assert rho_k.shape == (nkpt, nip, nip)
 
-        rho_s = phase @ rho_k.reshape(nkpt, -1)
-        rho_s = rho_s.reshape(nimg, nip, nip)
-        assert abs(rho_s.imag).max() < 1e-10
+    for k1 in range(nkpt):
+        vk_k1 = numpy.zeros_like(dm[k1], dtype=numpy.complex128)
+        for k2 in range(nkpt):
+            # eri_ref = df_obj.get_eri([df_obj.kpts[kk] for kk in [k1, k2, k2, k1]], compact=False)
+            # eri_ref = eri_ref.reshape(nao, nao, nao, nao)
+            # eri_ref = numpy.array(eri_ref, dtype=numpy.complex128)
 
-        v_s = df_obj._ws * rho_s
-        v_k = phase.conj().T @ v_s.reshape(nimg, -1)
-        v_k = v_k.reshape(nkpt, nip, nip)
-        assert v_k.shape == (nkpt, nip, nip)
+            q = kconserv2[k1, k2]
+            xk1 = df_obj._x[k1]
+            xk2 = df_obj._x[k2]
+            wq = df_obj._wq[q]
 
-        vk_kpts.append(
-            numpy.einsum("kIm,kIn,kIJ->kmn", df_obj._x.conj(), df_obj._x, v_k, optimize=True)
-        )
+            # path = numpy.einsum_path("IJ,Im,Ik,Jl,Jn,kl->mn", wq, xk1.conj(), xk2, xk2.conj(), xk1, rho, optimize=True)
+            # print(path[0])
+            # print(path[1])
+            # assert 1 == 2
 
-    vk_kpts = numpy.asarray(vk_kpts)
+            v = wq * rho[k2]
+            vk_k1 += numpy.einsum("IJ,Im,Jn->mn", v, xk1.conj(), xk1, optimize=True)
+
+        vk_kpts.append(vk_k1)
+
+    vk_kpts = numpy.asarray(vk_kpts).reshape(nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
 
 class InterpolativeSeparableDensityFitting(FFTDF):
     _x = None
-    _w = None
+    _w0 = None
+    _wq = None
     blksize = 8000  # block size for the aoR_loop
 
     def __init__(self, cell, kpts, m0=None, c0=20.0):
@@ -356,7 +388,7 @@ if __name__ == "__main__":
 
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
     df_obj.verbose = 5
-    df_obj.c0 = 20.0
+    df_obj.c0 = 40.0
     df_obj.m0 = [15, 15, 15]
     df_obj.build()
 
