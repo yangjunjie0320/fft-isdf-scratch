@@ -240,25 +240,12 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     vk_kpts = []
 
     for k1 in range(nkpt):
+        xk1 = df_obj._x[k1]
         vk_k1 = numpy.zeros_like(dm[k1], dtype=numpy.complex128)
         for k2 in range(nkpt):
-            # eri_ref = df_obj.get_eri([df_obj.kpts[kk] for kk in [k1, k2, k2, k1]], compact=False)
-            # eri_ref = eri_ref.reshape(nao, nao, nao, nao)
-            # eri_ref = numpy.array(eri_ref, dtype=numpy.complex128)
-
             q = kconserv2[k1, k2]
-            xk1 = df_obj._x[k1]
-            xk2 = df_obj._x[k2]
-            wq = df_obj._wq[q]
-
-            # path = numpy.einsum_path("IJ,Im,Ik,Jl,Jn,kl->mn", wq, xk1.conj(), xk2, xk2.conj(), xk1, rho, optimize=True)
-            # print(path[0])
-            # print(path[1])
-            # assert 1 == 2
-
-            v = wq * rho[k2]
+            v = df_obj._wq[q] * rho[k2]
             vk_k1 += numpy.einsum("IJ,Im,Jn->mn", v, xk1.conj(), xk1, optimize=True)
-
         vk_kpts.append(vk_k1)
 
     vk_kpts = numpy.asarray(vk_kpts).reshape(nkpt, nao, nao)
@@ -397,9 +384,16 @@ if __name__ == "__main__":
     scf_obj = pyscf.pbc.scf.KRHF(cell, kpts=cell.get_kpts(kmesh))
     dm_kpts = scf_obj.get_init_guess()
 
+    log = logger.new_logger(df_obj, df_obj.verbose)
+    
+    t0 = (process_clock(), perf_counter())
     vj1 = get_j_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
     vk1 = get_k_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
+    t1 = log.timer("get_j_kpts and get_k_kpts", *t0)
+
+    t0 = (process_clock(), perf_counter())
     vj2, vk2 = df_obj.get_jk(dm_kpts, with_j=True, with_k=True)
+    t1 = log.timer("get_jk", *t0)
 
     assert vj1.shape == vj2.shape
     assert vk1.shape == vk2.shape
