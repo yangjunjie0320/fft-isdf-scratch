@@ -337,7 +337,7 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 200
+    cell.ke_cutoff = 20
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
