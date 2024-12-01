@@ -152,7 +152,7 @@ def get_j_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     assert df_obj._x.shape  == (nkpt, nip, nao)  
     assert df_obj._w0.shape == (nip, nip)
 
-    rho = numpy.einsum("kIm,kIn,xkmn->xI", df_obj._x, df_obj._x, dms, optimize=True)
+    rho = numpy.einsum("kIm,kIn,xkmn->xI", df_obj._x, df_obj._x.conj(), dms, optimize=True)
     rho *= 1.0 / nkpt
     assert rho.shape == (nset, nip)
 
@@ -163,7 +163,7 @@ def get_j_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     nband = len(kpts_band)
     assert nband == nkpt
 
-    vj_kpts = numpy.einsum("kIm,kIn,xI->xkmn", df_obj._x, df_obj._x, v, optimize=True)
+    vj_kpts = numpy.einsum("kIm,kIn,xI->xkmn", df_obj._x.conj(), df_obj._x, v, optimize=True)
     assert vj_kpts.shape == (nset, nkpt, nao, nao)
 
     if is_zero(kpts_band):
@@ -321,8 +321,11 @@ ISDF = InterpolativeSeparableDensityFitting
 
 if __name__ == "__main__":
     from ase.build import bulk
-    # atoms = bulk("NiO", "rocksalt", a=4.18)
-    atoms = bulk("C", "diamond", a=3.567)
+    atoms = bulk("NiO", "rocksalt", a=4.18)
+    print(atoms.cell)
+    print(atoms.positions)
+    print(atoms.numbers)
+    # atoms = bulk("C", "diamond", a=3.567)
 
     from pyscf.pbc.gto import Cell
     from pyscf.pbc.tools.pyscf_ase import ase_atoms_to_pyscf
