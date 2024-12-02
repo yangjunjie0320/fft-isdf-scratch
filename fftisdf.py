@@ -223,6 +223,72 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
         vk_kpts = numpy.asarray(vk_kpts).reshape(nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
 
+KPT_DIFF_TOL = 1e-5
+def trans_2e(df_obj, C_ao_lo=None, C_lo_eo=None, unit_eri=False,
+             symmetry=4, t_reversal_symm=True, max_memory=None,
+             kscaled_center=None, kconserv_tol=KPT_DIFF_TOL,
+             fname=None):
+    
+    log = logger.new_logger(df_obj, df_obj.verbose)
+    log.info("Get embedding space ERI from FFTISDF")
+
+    cell = df_obj.cell
+    nao = cell.nao_nr()
+    kpts = df_obj.kpts
+    kmesh = df_obj.kmesh
+    nkpts = numpy.prod(kmesh)
+
+    # If C_ao_lo and basis not given, this routine is k2gamma AO transformation
+    if C_ao_lo is None:
+        # C_ao_lo = numpy.zeros((nkpts, nao, nao), dtype=complex)
+        # C_ao_lo[:, range(nao), range(nao)] = 1.0  # identity matrix for each k
+        C_ao_lo = [numpy.eye(nao) for _ in range(nkpts)]
+        C_ao_lo = numpy.asarray(C_ao_lo, dtype=numpy.complex128)
+
+    # add spin dimension for restricted C_ao_lo
+    if C_ao_lo.ndim == 3:
+        C_ao_lo = C_ao_lo[numpy.newaxis]
+
+    # possible kpts shift
+    kscaled = cell.get_scaled_kpts(kpts)
+    if kscaled_center is not None:
+        kscaled -= kscaled_center
+
+    # C_lo_eo related
+    if C_lo_eo is None:
+        C_lo_eo = numpy.eye(nao * nkpts)
+        C_lo_eo = C_lo_eo.reshape((1, nkpts, nao, nao, nkpts))
+
+    if C_lo_eo.shape[0] < C_ao_lo.shape[0]:
+        from pyscf.pbc.df.df_ao import add_spin_dim
+        C_lo_eo = add_spin_dim(C_lo_eo, C_ao_lo.shape[0])
+
+    if C_ao_lo.shape[0] < C_lo_eo.shape[0]:
+        C_ao_lo = add_spin_dim(C_ao_lo, C_lo_eo.shape[0])
+
+    if unit_eri:
+        C_ao_emb = C_ao_lo / (nkpts ** 0.75)
+    else:
+        phase = None
+        C_ao_emb = None
+
+    spin, _, _, nemb = C_ao_emb.shape
+    assert C_ao_emb.shape == (spin, nkpts, nao, nemb)
+    
+    nemb_pair = nemb * (nemb + 1) // 2
+
+    xk = df_obj._x
+    wq = df_obj._wq
+    nip = df_obj._x.shape[1]
+    assert xk.shape == (nkpts, nip, nao)
+    assert wq.shape == (nkpts, nip, nip)
+
+    xmo = [C_ao_emb[s, k].T @ xk[k].T for s, k in product(range(spin), range(nkpts))]
+    xmo = numpy.asarray(xmo).reshape(spin, nkpts, nemb, nip)
+    assert xmo.shape == (spin, nkpts, nemb, nip)
+
+    eri = numpy.zeros((spin * (spin + 1) // 2, ))
+
 class InterpolativeSeparableDensityFitting(FFTDF):
     _x = None
     _w0 = None
@@ -316,6 +382,9 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         t1 = log.timer("select_interpolation_points", *t0)
         log.info("Pivoted Cholesky rank = %d, nip = %d, estimated error = %6.2e", rank, nip, chol[nip, nip])
         return x0[:, mask, :]
+    
+    def _gen_trans_2e(self):
+        return trans_2e
     
 ISDF = InterpolativeSeparableDensityFitting
 
