@@ -210,84 +210,102 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
         rho = numpy.asarray(rho) / nkpt
         assert rho.shape == (nkpt, nip, nip)
 
-        vk_kpts = []
+        ws = phase @ df_obj._wq.reshape(nkpt, -1)
+        ws = ws.reshape(nimg, nip, nip)
+
+        rhos = phase @ rho.reshape(nkpt, -1)
+        rhos = rhos.reshape(nimg, nip, nip)
+
+        vs = ws * rhos
+        vk = phase.T @ vs.reshape(nimg, -1)
+        vk = vk.reshape(nkpt, nip, nip) * numpy.sqrt(nkpt)
+
+        # vk = []
         for k1 in range(nkpt):
             xk1 = df_obj._x[k1]
-            vk_k1 = numpy.zeros_like(dm[k1], dtype=numpy.complex128)
+
+            v = numpy.zeros((nip, nip), dtype=numpy.complex128)
             for k2 in range(nkpt):
                 q = kconserv2[k1, k2]
-                v = df_obj._wq[q] * rho[k2]
-                vk_k1 += xk1.conj().T @ v @ xk1
-            vk_kpts.append(vk_k1)
+                v += df_obj._wq[q] * rho[k2]
+            v_ref = v
+            v_sol = vk[k1]
 
-        vk_kpts = numpy.asarray(vk_kpts).reshape(nkpt, nao, nao)
+            err = abs(v_sol - v_ref).max()
+            print("k1 = %d, err = % 6.4e" % (k1, err))
+            assert err < 1e-10
+
+        #     vk.append(xk1.conj().T @ v_sol @ xk1)
+        vk_kpts.append(numpy.einsum("kIm,kIn,kIJ->kmn", df_obj._x.conj(), df_obj._x, vk, optimize=True))
+
+    vk_kpts = numpy.asarray(vk_kpts).reshape(nset, nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
 
-KPT_DIFF_TOL = 1e-5
-def trans_2e(df_obj, C_ao_lo=None, C_lo_eo=None, unit_eri=False,
-             symmetry=4, t_reversal_symm=True, max_memory=None,
-             kscaled_center=None, kconserv_tol=KPT_DIFF_TOL,
-             fname=None):
+# KPT_DIFF_TOL = 1e-5
+# def trans_2e(df_obj, C_ao_lo=None, C_lo_eo=None, unit_eri=False,
+#              symmetry=4, t_reversal_symm=True, max_memory=None,
+#              kscaled_center=None, kconserv_tol=KPT_DIFF_TOL,
+#              fname=None):
     
-    log = logger.new_logger(df_obj, df_obj.verbose)
-    log.info("Get embedding space ERI from FFTISDF")
+#     log = logger.new_logger(df_obj, df_obj.verbose)
+#     log.info("Get embedding space ERI from FFTISDF")
 
-    cell = df_obj.cell
-    nao = cell.nao_nr()
-    kpts = df_obj.kpts
-    kmesh = df_obj.kmesh
-    nkpts = numpy.prod(kmesh)
+#     cell = df_obj.cell
+#     nao = cell.nao_nr()
+#     kpts = df_obj.kpts
+#     kmesh = df_obj.kmesh
+#     nkpts = numpy.prod(kmesh)
 
-    # If C_ao_lo and basis not given, this routine is k2gamma AO transformation
-    if C_ao_lo is None:
-        # C_ao_lo = numpy.zeros((nkpts, nao, nao), dtype=complex)
-        # C_ao_lo[:, range(nao), range(nao)] = 1.0  # identity matrix for each k
-        C_ao_lo = [numpy.eye(nao) for _ in range(nkpts)]
-        C_ao_lo = numpy.asarray(C_ao_lo, dtype=numpy.complex128)
+#     # If C_ao_lo and basis not given, this routine is k2gamma AO transformation
+#     if C_ao_lo is None:
+#         # C_ao_lo = numpy.zeros((nkpts, nao, nao), dtype=complex)
+#         # C_ao_lo[:, range(nao), range(nao)] = 1.0  # identity matrix for each k
+#         C_ao_lo = [numpy.eye(nao) for _ in range(nkpts)]
+#         C_ao_lo = numpy.asarray(C_ao_lo, dtype=numpy.complex128)
 
-    # add spin dimension for restricted C_ao_lo
-    if C_ao_lo.ndim == 3:
-        C_ao_lo = C_ao_lo[numpy.newaxis]
+#     # add spin dimension for restricted C_ao_lo
+#     if C_ao_lo.ndim == 3:
+#         C_ao_lo = C_ao_lo[numpy.newaxis]
 
-    # possible kpts shift
-    kscaled = cell.get_scaled_kpts(kpts)
-    if kscaled_center is not None:
-        kscaled -= kscaled_center
+#     # possible kpts shift
+#     kscaled = cell.get_scaled_kpts(kpts)
+#     if kscaled_center is not None:
+#         kscaled -= kscaled_center
 
-    # C_lo_eo related
-    if C_lo_eo is None:
-        C_lo_eo = numpy.eye(nao * nkpts)
-        C_lo_eo = C_lo_eo.reshape((1, nkpts, nao, nao, nkpts))
+#     # C_lo_eo related
+#     if C_lo_eo is None:
+#         C_lo_eo = numpy.eye(nao * nkpts)
+#         C_lo_eo = C_lo_eo.reshape((1, nkpts, nao, nao, nkpts))
 
-    if C_lo_eo.shape[0] < C_ao_lo.shape[0]:
-        from pyscf.pbc.df.df_ao import add_spin_dim
-        C_lo_eo = add_spin_dim(C_lo_eo, C_ao_lo.shape[0])
+#     if C_lo_eo.shape[0] < C_ao_lo.shape[0]:
+#         from pyscf.pbc.df.df_ao import add_spin_dim
+#         C_lo_eo = add_spin_dim(C_lo_eo, C_ao_lo.shape[0])
 
-    if C_ao_lo.shape[0] < C_lo_eo.shape[0]:
-        C_ao_lo = add_spin_dim(C_ao_lo, C_lo_eo.shape[0])
+#     if C_ao_lo.shape[0] < C_lo_eo.shape[0]:
+#         C_ao_lo = add_spin_dim(C_ao_lo, C_lo_eo.shape[0])
 
-    if unit_eri:
-        C_ao_emb = C_ao_lo / (nkpts ** 0.75)
-    else:
-        phase = None
-        C_ao_emb = None
+#     if unit_eri:
+#         C_ao_emb = C_ao_lo / (nkpts ** 0.75)
+#     else:
+#         phase = None
+#         C_ao_emb = None
 
-    spin, _, _, nemb = C_ao_emb.shape
-    assert C_ao_emb.shape == (spin, nkpts, nao, nemb)
+#     spin, _, _, nemb = C_ao_emb.shape
+#     assert C_ao_emb.shape == (spin, nkpts, nao, nemb)
     
-    nemb_pair = nemb * (nemb + 1) // 2
+#     nemb_pair = nemb * (nemb + 1) // 2
 
-    xk = df_obj._x
-    wq = df_obj._wq
-    nip = df_obj._x.shape[1]
-    assert xk.shape == (nkpts, nip, nao)
-    assert wq.shape == (nkpts, nip, nip)
+#     xk = df_obj._x
+#     wq = df_obj._wq
+#     nip = df_obj._x.shape[1]
+#     assert xk.shape == (nkpts, nip, nao)
+#     assert wq.shape == (nkpts, nip, nip)
 
-    xmo = [C_ao_emb[s, k].T @ xk[k].T for s, k in product(range(spin), range(nkpts))]
-    xmo = numpy.asarray(xmo).reshape(spin, nkpts, nemb, nip)
-    assert xmo.shape == (spin, nkpts, nemb, nip)
+#     xmo = [C_ao_emb[s, k].T @ xk[k].T for s, k in product(range(spin), range(nkpts))]
+#     xmo = numpy.asarray(xmo).reshape(spin, nkpts, nemb, nip)
+#     assert xmo.shape == (spin, nkpts, nemb, nip)
 
-    eri = numpy.zeros((spin * (spin + 1) // 2, ))
+#     eri = numpy.zeros((spin * (spin + 1) // 2, ))
 
 class InterpolativeSeparableDensityFitting(FFTDF):
     _x = None
@@ -390,11 +408,8 @@ ISDF = InterpolativeSeparableDensityFitting
 
 if __name__ == "__main__":
     from ase.build import bulk
-    atoms = bulk("NiO", "rocksalt", a=4.18)
-    print(atoms.cell)
-    print(atoms.positions)
-    print(atoms.numbers)
-    # atoms = bulk("C", "diamond", a=3.567)
+    # atoms = bulk("NiO", "rocksalt", a=4.18)
+    atoms = bulk("C", "diamond", a=3.567)
 
     from pyscf.pbc.gto import Cell
     from pyscf.pbc.tools.pyscf_ase import ase_atoms_to_pyscf
@@ -406,15 +421,15 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 400
+    cell.ke_cutoff = 50
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
     from pyscf.pbc.df.fft import FFTDF
     df_obj = FFTDF(cell)
 
-    kmesh = [4, 4, 4]
-    # kmesh = [2, 2, 2]
+    # kmesh = [4, 4, 4]
+    kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
 
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
