@@ -204,14 +204,14 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     from pyscf.pbc.lib.kpts_helper import get_kconserv_ria
     kconserv2 = get_kconserv_ria(cell, df_obj.kpts)
 
+    ws = phase @ df_obj._wq.reshape(nkpt, -1)
+    ws = ws.reshape(nimg, nip, nip)
+
     vk_kpts = []
     for dm in dms:
         rho = [x @ d @ x.conj().T for x, d in zip(df_obj._x, dm)]
         rho = numpy.asarray(rho) / nkpt
         assert rho.shape == (nkpt, nip, nip)
-
-        ws = phase @ df_obj._wq.reshape(nkpt, -1)
-        ws = ws.reshape(nimg, nip, nip)
 
         rhos = phase @ rho.reshape(nkpt, -1)
         rhos = rhos.reshape(nimg, nip, nip)
@@ -219,7 +219,7 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
         vs = ws * rhos
         vk = phase.T @ vs.reshape(nimg, -1)
         vk = vk.reshape(nkpt, nip, nip) * numpy.sqrt(nkpt)
-        vk_kpts.append(numpy.einsum("kIm,kIn,kIJ->kmn", df_obj._x.conj(), df_obj._x, vk, optimize=True))
+        vk_kpts.append([x.conj().T @ v @ x for v, x in zip(vk, df_obj._x)])
 
     vk_kpts = numpy.asarray(vk_kpts).reshape(nset, nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
@@ -400,7 +400,8 @@ if __name__ == "__main__":
     cell = Cell()
     cell.atom = ase_atoms_to_pyscf(atoms)
     cell.a = numpy.array(atoms.cell)
-    cell.basis = 'gth-szv-molopt-sr'
+    # cell.basis = 'gth-szv-molopt-sr'
+    cell.basis = 'gth-dzvp'
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
