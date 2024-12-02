@@ -405,15 +405,15 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 50
+    cell.ke_cutoff = 200
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
     from pyscf.pbc.df.fft import FFTDF
     df_obj = FFTDF(cell)
 
-    # kmesh = [4, 4, 4]
-    kmesh = [2, 2, 2]
+    kmesh = [4, 4, 4]
+    # kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
 
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
