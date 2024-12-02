@@ -219,23 +219,6 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
         vs = ws * rhos
         vk = phase.T @ vs.reshape(nimg, -1)
         vk = vk.reshape(nkpt, nip, nip) * numpy.sqrt(nkpt)
-
-        # vk = []
-        for k1 in range(nkpt):
-            xk1 = df_obj._x[k1]
-
-            v = numpy.zeros((nip, nip), dtype=numpy.complex128)
-            for k2 in range(nkpt):
-                q = kconserv2[k1, k2]
-                v += df_obj._wq[q] * rho[k2]
-            v_ref = v
-            v_sol = vk[k1]
-
-            err = abs(v_sol - v_ref).max()
-            print("k1 = %d, err = % 6.4e" % (k1, err))
-            assert err < 1e-10
-
-        #     vk.append(xk1.conj().T @ v_sol @ xk1)
         vk_kpts.append(numpy.einsum("kIm,kIn,kIJ->kmn", df_obj._x.conj(), df_obj._x, vk, optimize=True))
 
     vk_kpts = numpy.asarray(vk_kpts).reshape(nset, nkpt, nao, nao)
