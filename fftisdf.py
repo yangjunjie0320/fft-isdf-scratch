@@ -204,8 +204,7 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     wq = df_obj._wq
     ws = phase @ wq.reshape(nkpt, -1)
     ws = ws.reshape(nimg, nip, nip)
-    ws = ws.transpose(0, 2, 1)
-    ws = ws.real * numpy.sqrt(nkpt)
+    ws = ws * numpy.sqrt(nkpt)
 
     vk_kpts = []
     for dm in dms:
@@ -215,9 +214,9 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
 
         rhos = phase @ rhok.reshape(nkpt, -1)
         assert abs(rhos.imag).max() < 1e-10
-        rhos = rhos.real.reshape(nimg, nip, nip)
+        rhos = rhos.reshape(nimg, nip, nip)
 
-        vs = ws * rhos
+        vs = ws * rhos.transpose(0, 2, 1)
         vs = numpy.asarray(vs).reshape(nimg, nip, nip)
 
         vk = phase.T @ vs.reshape(nimg, -1)
@@ -446,23 +445,23 @@ if __name__ == "__main__":
     err = abs(vk1 - vk2).max()
     print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
 
-    # for k in range(nkpt):
-    #     print("\n" + "#" * 80)
-    #     print("k = %s" % df_obj.kpts[k])
+    for k in range(nkpt):
+        print("\n" + "#" * 80)
+        print("k = %s" % df_obj.kpts[k])
 
-    #     vk_ref = vk1[k]
-    #     vk_sol = vk2[k]
-    #     err = abs(vk_ref - vk_sol).max()
-    #     print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
+        vk_ref = vk1[k]
+        vk_sol = vk2[k]
+        err = abs(vk_ref - vk_sol).max()
+        print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
 
-    #     print("vk_ref real = ")
-    #     numpy.savetxt(cell.stdout, vk_ref.real, fmt="% 6.2f", delimiter=", ")
+        print("vk_ref real = ")
+        numpy.savetxt(cell.stdout, vk_ref.real, fmt="% 6.2f", delimiter=", ")
 
-    #     print("\nvk_sol real = ")
-    #     numpy.savetxt(cell.stdout, vk_sol.real, fmt="% 6.2f", delimiter=", ")
+        print("\nvk_sol real = ")
+        numpy.savetxt(cell.stdout, vk_sol.real, fmt="% 6.2f", delimiter=", ")
 
-    #     print("\nvk_ref imag = ")
-    #     numpy.savetxt(cell.stdout, vk_ref.imag, fmt="% 6.2f", delimiter=", ")
+        print("\nvk_ref imag = ")
+        numpy.savetxt(cell.stdout, vk_ref.imag, fmt="% 6.2f", delimiter=", ")
 
-    #     print("\nvk_sol imag = ")
-    #     numpy.savetxt(cell.stdout, vk_sol.imag, fmt="% 6.2f", delimiter=", ")
+        print("\nvk_sol imag = ")
+        numpy.savetxt(cell.stdout, vk_sol.imag, fmt="% 6.2f", delimiter=", ")
