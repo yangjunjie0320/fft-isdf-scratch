@@ -426,7 +426,7 @@ if __name__ == "__main__":
 
     t0 = (process_clock(), perf_counter())
     scf_obj.with_df = FFTDF(cell)
-    vj1, vk1 = scf_obj.get_jk(dm_kpts, with_j=True, with_k=True)
+    vj1, vk1 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
     t1 = log.timer("FFTDF JK", *t0)
 
     t0 = (process_clock(), perf_counter())
@@ -436,7 +436,7 @@ if __name__ == "__main__":
     scf_obj.with_df.m0 = [15, 15, 15]
     scf_obj.with_df.build()
     t1 = log.timer("Building ISDF", *t1)
-    vj2, vk2 = scf_obj.get_jk(dm_kpts, with_j=True, with_k=True)
+    vj2, vk2 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
     t2 = log.timer("ISDF JK", *t0)
 
     c0 = scf_obj.with_df.c0
