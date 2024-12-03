@@ -421,22 +421,34 @@ if __name__ == "__main__":
 
     t0 = (process_clock(), perf_counter())
     scf_obj.with_df = FFTDF(cell, kpts)
-    vj1, vk1 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
-    t1 = log.timer("FFTDF JK", *t0)
+    vj0, vk0 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
+    t1 = log.timer("-> FFTDF JK", *t0)
 
-    t0 = (process_clock(), perf_counter())
+    from pyscf.pbc.df import GDF
+    scf_obj.with_df = GDF(cell, kpts)
+    scf_obj.with_df.build()
+    t1 = log.timer("-> Building GDF", *t1)
+    vj1, vk1 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
+    t1 = log.timer("-> GDF JK", *t1)
+
+    err = abs(vj0 - vj1).max()
+    print("-> GDF vj err = % 6.4e" % err)
+
+    err = abs(vk0 - vk1).max()
+    print("-> GDF vk err = % 6.4e" % err)
+
     scf_obj.with_df = ISDF(cell, kpts=cell.get_kpts(kmesh))
     scf_obj.with_df.verbose = 5
     scf_obj.with_df.c0 = 40.0
     scf_obj.with_df.m0 = [15, 15, 15]
     scf_obj.with_df.build()
-    t1 = log.timer("Building ISDF", *t1)
+    t1 = log.timer("-> Building ISDF", *t1)
     vj2, vk2 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
-    t2 = log.timer("ISDF JK", *t0)
+    t1 = log.timer("-> ISDF JK", *t1)
 
     c0 = scf_obj.with_df.c0
-    err = abs(vj1 - vj2).max()
-    print("c0 = % 6.4f, vj err = % 6.4e" % (c0, err))
+    err = abs(vj0 - vj2).max()
+    print("-> ISDF c0 = % 6.4f, vj err = % 6.4e" % (c0, err))
 
-    err = abs(vk1 - vk2).max()
-    print("c0 = % 6.4f, vk err = % 6.4e" % (c0, err))
+    err = abs(vk0 - vk2).max()
+    print("-> ISDF c0 = % 6.4f, vk err = % 6.4e" % (c0, err))
