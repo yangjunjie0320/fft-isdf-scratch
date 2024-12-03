@@ -21,6 +21,8 @@ def download_poscar(mid: str, name=None, path=None) -> str:
         structure.to(filename=str(poscar_path), fmt="poscar")
         print(f"Successfully downloaded POSCAR for {mid} to {poscar_path}")
         return str(poscar_path)
+    
+def build_from_poscar(poscar_file: str):
 
 # Example usage:
 if __name__ == "__main__":

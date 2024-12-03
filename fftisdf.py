@@ -149,7 +149,7 @@ def get_j_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     assert df_obj._w0 is not None
 
     nip = df_obj._x.shape[1]
-    assert df_obj._x.shape  == (nkpt, nip, nao)  
+    assert df_obj._x.shape  == (nkpt, nip, nao)
     assert df_obj._w0.shape == (nip, nip)
 
     rho = numpy.einsum("kIm,kIn,xkmn->xI", df_obj._x, df_obj._x.conj(), dms, optimize=True)
@@ -205,52 +205,57 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     kconserv2 = get_kconserv_ria(cell, df_obj.kpts)
 
     wq = df_obj._wq
-    # ws = phase @ wq.reshape(nkpt, -1)
-    # ws = ws.reshape(nimg, nip, nip) * numpy.sqrt(nkpt)
+    ws = phase @ wq.reshape(nkpt, -1)
+    ws = ws.reshape(nimg, nip, nip)
+    ws *= numpy.sqrt(nkpt)
 
     vk_kpts = []
     for dm in dms:
-        # rhos = phase @ rho.reshape(nkpt, -1)
-        # rhos = rhos.reshape(nimg, nip, nip)
+        rhok = [x @ d @ x.conj().T for x, d in zip(df_obj._x, dm)]
+        rhok = numpy.asarray(rhok) / nkpt
+        assert rhok.shape == (nkpt, nip, nip)
 
-        # vs = ws * rhos
-        # vk = phase.T @ vs.reshape(nimg, -1)
-        # vk = vk.reshape(nkpt, nip, nip)
+        rhos = phase @ rhok.reshape(nkpt, -1)
+        assert abs(rhos.imag).max() < 1e-10
+        rhos = rhos.reshape(nimg, nip, nip)
 
-        rho = [x @ d @ x.conj().T for x, d in zip(df_obj._x, dm)]
-        rho = numpy.asarray(rho) / nkpt
-        assert rho.shape == (nkpt, nip, nip)
+        vs = [w * rho.T for w, rho in zip(ws, rhos)]
+        vs = numpy.asarray(vs).reshape(nimg, nip, nip)
 
-        for k1 in range(nkpt):
-            xk1 = df_obj._x[k1]
-            assert xk1.shape == (nip, nao)
+        vk = phase.T @ vs.reshape(nimg, -1)
+        vk = vk.reshape(nkpt, nip, nip)
 
-            v = numpy.zeros((nip, nip), dtype=numpy.complex128)
-            for k2 in range(nkpt):
-                q = kconserv2[k1, k2]
-                v += wq[q] * rho[k2]
+        vk_kpts.append([x.conj().T @ v @ x for x, v in zip(df_obj._x, vk)])
 
-            vk_kpts.append(xk1.conj().T @ v @ xk1)
-            # v_ref = v
-            # v_sol = vk[k1]
+        # for k1 in range(nkpt):
+        #     xk1 = df_obj._x[k1]
+        #     assert xk1.shape == (nip, nao)
 
-            # err = abs(v_ref - v_sol).max()
-            # log.info("k1 = %d, err = % 6.2e", k1, err)
+        #     v = numpy.zeros((nip, nip), dtype=numpy.complex128)
+        #     for k2 in range(nkpt):
+        #         q = kconserv2[k1, k2]
+        #         v += wq[q] * rhok[k2]
 
-            # print("v_ref.real = \n")
-            # numpy.savetxt(df_obj.stdout, v_ref.real[:10, :10], fmt="% 6.2e", delimiter=", ")
-            # print("v_sol.real = \n")
-            # numpy.savetxt(df_obj.stdout, v_sol.real[:10, :10], fmt="% 6.2e", delimiter=", ")
+        #     vk_kpts.append(xk1.conj().T @ v @ xk1)
 
-            # print("v_ref.imag = \n")
-            # numpy.savetxt(df_obj.stdout, v_ref.imag[:10, :10], fmt="% 6.2e", delimiter=", ")
-            # print("v_sol.imag = \n")
-            # numpy.savetxt(df_obj.stdout, v_sol.imag[:10, :10], fmt="% 6.2e", delimiter=", ")
+        #     v_ref = v
+        #     v_sol = vk[k1]
 
-            # assert err < 1e-10
+        #     err = abs(v_ref - v_sol).max()
+        #     log.info("k1 = %d, err = % 6.2e", k1, err)
 
+        #     print("\nv_ref.real =")
+        #     numpy.savetxt(df_obj.stdout, v_ref.real[:10, :10], fmt="% 6.2e", delimiter=", ")
+        #     print("\nv_sol.real =")
+        #     numpy.savetxt(df_obj.stdout, v_sol.real[:10, :10], fmt="% 6.2e", delimiter=", ")
 
-        # vk_kpts.append([x.T.conj() @ v @ x for x, v in zip(df_obj._x, vk)])
+        #     print("\nv_ref.imag =")
+        #     numpy.savetxt(df_obj.stdout, v_ref.imag[:10, :10], fmt="% 6.2e", delimiter=", ")
+        #     print("\nv_sol.imag =")
+        #     numpy.savetxt(df_obj.stdout, v_sol.imag[:10, :10], fmt="% 6.2e", delimiter=", ")
+
+        #     assert err < 1e-10
+
     vk_kpts = numpy.asarray(vk_kpts).reshape(nset, nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
 
@@ -449,7 +454,7 @@ if __name__ == "__main__":
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
     df_obj.verbose = 5
     df_obj.c0 = 40.0
-    df_obj.m0 = [15, 15, 15]
+    df_obj.m0 = [11, 11, 11]
     df_obj.build()
 
     nao = cell.nao_nr()
@@ -473,24 +478,23 @@ if __name__ == "__main__":
     err = abs(vk1 - vk2).max()
     print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
 
+    # for k in range(nkpt):
+    #     print("\n" + "#" * 80)
+    #     print("k = %s" % df_obj.kpts[k])
 
-    for k in range(nkpt):
-        print("\n" + "#" * 80)
-        print("k = %s" % df_obj.kpts[k])
+    #     vk_ref = vk1[k]
+    #     vk_sol = vk2[k]
+    #     err = abs(vk_ref - vk_sol).max()
+    #     print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
 
-        vk_ref = vk1[k]
-        vk_sol = vk2[k]
-        err = abs(vk_ref - vk_sol).max()
-        print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
+    #     print("vk_ref real = ")
+    #     numpy.savetxt(cell.stdout, vk_ref.real, fmt="% 6.2f", delimiter=", ")
 
-        print("vk_ref real = ")
-        numpy.savetxt(cell.stdout, vk_ref.real, fmt="% 6.2f", delimiter=", ")
+    #     print("\nvk_sol real = ")
+    #     numpy.savetxt(cell.stdout, vk_sol.real, fmt="% 6.2f", delimiter=", ")
 
-        print("\nvk_sol real = ")
-        numpy.savetxt(cell.stdout, vk_sol.real, fmt="% 6.2f", delimiter=", ")
+    #     print("\nvk_ref imag = ")
+    #     numpy.savetxt(cell.stdout, vk_ref.imag, fmt="% 6.2f", delimiter=", ")
 
-        print("\nvk_ref imag = ")
-        numpy.savetxt(cell.stdout, vk_ref.imag, fmt="% 6.2f", delimiter=", ")
-
-        print("\nvk_sol imag = ")
-        numpy.savetxt(cell.stdout, vk_sol.imag, fmt="% 6.2f", delimiter=", ")
+    #     print("\nvk_sol imag = ")
+    #     numpy.savetxt(cell.stdout, vk_sol.imag, fmt="% 6.2f", delimiter=", ")
