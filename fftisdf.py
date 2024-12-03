@@ -201,13 +201,11 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     assert df_obj._x.shape == (nkpt, nip, nao)
     assert df_obj._wq.shape == (nkpt, nip, nip)
 
-    from pyscf.pbc.lib.kpts_helper import get_kconserv_ria
-    kconserv2 = get_kconserv_ria(cell, df_obj.kpts)
-
     wq = df_obj._wq
     ws = phase @ wq.reshape(nkpt, -1)
     ws = ws.reshape(nimg, nip, nip)
-    ws *= numpy.sqrt(nkpt)
+    ws = ws.transpose(0, 2, 1)
+    ws = ws.real * numpy.sqrt(nkpt)
 
     vk_kpts = []
     for dm in dms:
@@ -217,44 +215,15 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
 
         rhos = phase @ rhok.reshape(nkpt, -1)
         assert abs(rhos.imag).max() < 1e-10
-        rhos = rhos.reshape(nimg, nip, nip)
+        rhos = rhos.real.reshape(nimg, nip, nip)
 
-        vs = [w * rho.T for w, rho in zip(ws, rhos)]
+        vs = ws * rhos
         vs = numpy.asarray(vs).reshape(nimg, nip, nip)
 
         vk = phase.T @ vs.reshape(nimg, -1)
         vk = vk.reshape(nkpt, nip, nip)
 
         vk_kpts.append([x.conj().T @ v @ x for x, v in zip(df_obj._x, vk)])
-
-        # for k1 in range(nkpt):
-        #     xk1 = df_obj._x[k1]
-        #     assert xk1.shape == (nip, nao)
-
-        #     v = numpy.zeros((nip, nip), dtype=numpy.complex128)
-        #     for k2 in range(nkpt):
-        #         q = kconserv2[k1, k2]
-        #         v += wq[q] * rhok[k2]
-
-        #     vk_kpts.append(xk1.conj().T @ v @ xk1)
-
-        #     v_ref = v
-        #     v_sol = vk[k1]
-
-        #     err = abs(v_ref - v_sol).max()
-        #     log.info("k1 = %d, err = % 6.2e", k1, err)
-
-        #     print("\nv_ref.real =")
-        #     numpy.savetxt(df_obj.stdout, v_ref.real[:10, :10], fmt="% 6.2e", delimiter=", ")
-        #     print("\nv_sol.real =")
-        #     numpy.savetxt(df_obj.stdout, v_sol.real[:10, :10], fmt="% 6.2e", delimiter=", ")
-
-        #     print("\nv_ref.imag =")
-        #     numpy.savetxt(df_obj.stdout, v_ref.imag[:10, :10], fmt="% 6.2e", delimiter=", ")
-        #     print("\nv_sol.imag =")
-        #     numpy.savetxt(df_obj.stdout, v_sol.imag[:10, :10], fmt="% 6.2e", delimiter=", ")
-
-        #     assert err < 1e-10
 
     vk_kpts = numpy.asarray(vk_kpts).reshape(nset, nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
@@ -448,13 +417,12 @@ if __name__ == "__main__":
     df_obj = FFTDF(cell)
 
     kmesh = [4, 4, 4]
-    # kmesh = [2, 2, 2]
     nkpt = nimg = numpy.prod(kmesh)
 
     df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
     df_obj.verbose = 5
     df_obj.c0 = 40.0
-    df_obj.m0 = [11, 11, 11]
+    df_obj.m0 = [15, 15, 15]
     df_obj.build()
 
     nao = cell.nao_nr()
