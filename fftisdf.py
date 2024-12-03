@@ -411,35 +411,37 @@ if __name__ == "__main__":
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
-    from pyscf.pbc.df.fft import FFTDF
-    df_obj = FFTDF(cell)
-
     kmesh = [4, 4, 4]
     nkpt = nimg = numpy.prod(kmesh)
+    kpts = cell.get_kpts(kmesh)
 
-    df_obj = ISDF(cell, kpts=cell.get_kpts(kmesh))
-    df_obj.verbose = 5
-    df_obj.c0 = 40.0
-    df_obj.m0 = [15, 15, 15]
-    df_obj.build()
+    log = logger.new_logger(None, 5)
+
+    from pyscf.pbc.df.fft import FFTDF
 
     nao = cell.nao_nr()
 
     scf_obj = pyscf.pbc.scf.KRHF(cell, kpts=cell.get_kpts(kmesh))
     dm_kpts = scf_obj.get_init_guess()
 
-    log = logger.new_logger(df_obj, df_obj.verbose)
+    t0 = (process_clock(), perf_counter())
+    scf_obj.with_df = FFTDF(cell)
+    vj1, vk1 = scf_obj.get_jk(dm_kpts, with_j=True, with_k=True)
+    t1 = log.timer("FFTDF JK", *t0)
 
     t0 = (process_clock(), perf_counter())
-    vj1 = get_j_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
-    vk1 = get_k_kpts(df_obj, dm_kpts, df_obj.kpts, df_obj.kpts)[0]
-    t1 = log.timer("get_j_kpts and get_k_kpts", *t0)
+    scf_obj.with_df = ISDF(cell, kpts=cell.get_kpts(kmesh))
+    scf_obj.with_df.verbose = 5
+    scf_obj.with_df.c0 = 40.0
+    scf_obj.with_df.m0 = [15, 15, 15]
+    scf_obj.with_df.build()
+    t1 = log.timer("Building ISDF", *t1)
+    vj2, vk2 = scf_obj.get_jk(dm_kpts, with_j=True, with_k=True)
+    t2 = log.timer("ISDF JK", *t0)
 
-    t0 = (process_clock(), perf_counter())
-    vj2, vk2 = df_obj.get_jk(dm_kpts, with_j=True, with_k=True)
-    t1 = log.timer("get_jk", *t0)
-
+    c0 = scf_obj.with_df.c0
     err = abs(vj1 - vj2).max()
-    print("c0 = % 6.4f, vj err = % 6.4e" % (df_obj.c0, err))
+    print("c0 = % 6.4f, vj err = % 6.4e" % (c0, err))
+
     err = abs(vk1 - vk2).max()
-    print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
+    print("c0 = % 6.4f, vk err = % 6.4e" % (c0, err))
