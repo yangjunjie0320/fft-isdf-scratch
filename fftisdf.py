@@ -204,7 +204,7 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     wq = df_obj._wq
     ws = phase @ wq.reshape(nkpt, -1)
     ws = ws.reshape(nimg, nip, nip)
-    ws = ws * numpy.sqrt(nkpt)
+    ws = ws.real * numpy.sqrt(nkpt)
 
     vk_kpts = []
     for dm in dms:
@@ -214,7 +214,7 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
 
         rhos = phase @ rhok.reshape(nkpt, -1)
         assert abs(rhos.imag).max() < 1e-10
-        rhos = rhos.reshape(nimg, nip, nip)
+        rhos = rhos.real.reshape(nimg, nip, nip)
 
         vs = ws * rhos.transpose(0, 2, 1)
         vs = numpy.asarray(vs).reshape(nimg, nip, nip)
@@ -387,8 +387,8 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         log.info("Pivoted Cholesky rank = %d, nip = %d, estimated error = %6.2e", rank, nip, chol[nip, nip])
         return x0[:, mask, :]
     
-    def _gen_trans_2e(self):
-        return trans_2e
+    get_j_kpts = get_j_kpts
+    get_k_kpts = get_k_kpts
     
 ISDF = InterpolativeSeparableDensityFitting
 
@@ -403,12 +403,11 @@ if __name__ == "__main__":
     cell = Cell()
     cell.atom = ase_atoms_to_pyscf(atoms)
     cell.a = numpy.array(atoms.cell)
-    # cell.basis = 'gth-szv-molopt-sr'
-    cell.basis = 'gth-szv'
+    cell.basis = 'gth-dzvp-molopt-sr'
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 20
+    cell.ke_cutoff = 200
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
@@ -444,24 +443,3 @@ if __name__ == "__main__":
     print("c0 = % 6.4f, vj err = % 6.4e" % (df_obj.c0, err))
     err = abs(vk1 - vk2).max()
     print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
-
-    for k in range(nkpt):
-        print("\n" + "#" * 80)
-        print("k = %s" % df_obj.kpts[k])
-
-        vk_ref = vk1[k]
-        vk_sol = vk2[k]
-        err = abs(vk_ref - vk_sol).max()
-        print("c0 = % 6.4f, vk err = % 6.4e" % (df_obj.c0, err))
-
-        print("vk_ref real = ")
-        numpy.savetxt(cell.stdout, vk_ref.real, fmt="% 6.2f", delimiter=", ")
-
-        print("\nvk_sol real = ")
-        numpy.savetxt(cell.stdout, vk_sol.real, fmt="% 6.2f", delimiter=", ")
-
-        print("\nvk_ref imag = ")
-        numpy.savetxt(cell.stdout, vk_ref.imag, fmt="% 6.2f", delimiter=", ")
-
-        print("\nvk_sol imag = ")
-        numpy.savetxt(cell.stdout, vk_sol.imag, fmt="% 6.2f", delimiter=", ")
