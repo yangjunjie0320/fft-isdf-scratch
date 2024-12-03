@@ -205,7 +205,7 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
     kconserv2 = get_kconserv_ria(cell, df_obj.kpts)
 
     ws = phase @ df_obj._wq.reshape(nkpt, -1)
-    ws = ws.reshape(nimg, nip, nip)
+    ws = ws.reshape(nimg, nip, nip) * numpy.sqrt(nkpt)
 
     vk_kpts = []
     for dm in dms:
@@ -218,8 +218,8 @@ def get_k_kpts(df_obj, dm_kpts, hermi=1, kpts=numpy.zeros((1, 3)), kpts_band=Non
 
         vs = ws * rhos
         vk = phase.T @ vs.reshape(nimg, -1)
-        vk = vk.reshape(nkpt, nip, nip) * numpy.sqrt(nkpt)
-        vk_kpts.append([x.conj().T @ v @ x for v, x in zip(vk, df_obj._x)])
+        vk = vk.reshape(nkpt, nip, nip)
+        vk_kpts.append([x.conj().T @ v @ x for x, v in zip(df_obj._x, vk)])
 
     vk_kpts = numpy.asarray(vk_kpts).reshape(nset, nkpt, nao, nao)
     return _format_jks(vk_kpts, dms, input_band, kpts)
