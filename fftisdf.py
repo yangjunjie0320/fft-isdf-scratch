@@ -416,16 +416,11 @@ if __name__ == "__main__":
     kpts = cell.get_kpts(kmesh)
 
     log = logger.new_logger(None, 5)
-
-    from pyscf.pbc.df.fft import FFTDF
-
-    nao = cell.nao_nr()
-
     scf_obj = pyscf.pbc.scf.KRHF(cell, kpts=cell.get_kpts(kmesh))
     dm_kpts = scf_obj.get_init_guess()
 
     t0 = (process_clock(), perf_counter())
-    scf_obj.with_df = FFTDF(cell)
+    scf_obj.with_df = FFTDF(cell, kpts)
     vj1, vk1 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
     t1 = log.timer("FFTDF JK", *t0)
 
