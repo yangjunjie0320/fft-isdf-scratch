@@ -387,8 +387,22 @@ class InterpolativeSeparableDensityFitting(FFTDF):
         log.info("Pivoted Cholesky rank = %d, nip = %d, estimated error = %6.2e", rank, nip, chol[nip, nip])
         return x0[:, mask, :]
     
-    get_j_kpts = get_j_kpts
-    get_k_kpts = get_k_kpts
+    def get_jk(self, dm, hermi=1, kpts=None, kpts_band=None,
+               with_j=True, with_k=True, omega=None, exxdiv=None):
+        if omega is not None:
+            raise NotImplementedError
+
+        from pyscf.pbc.df.aft import _check_kpts
+        kpts, is_single_kpt = _check_kpts(self, kpts)
+        if is_single_kpt:
+            raise NotImplementedError
+        else:
+            vj = vk = None
+            if with_k:
+                vk = get_k_kpts(self, dm, hermi, kpts, kpts_band, exxdiv)
+            if with_j:
+                vj = get_j_kpts(self, dm, hermi, kpts, kpts_band)
+        return vj, vk
     
 ISDF = InterpolativeSeparableDensityFitting
 
@@ -407,7 +421,7 @@ if __name__ == "__main__":
     cell.pseudo = 'gth-pade'
     cell.verbose = 0
     cell.unit = 'aa'
-    cell.ke_cutoff = 200
+    cell.ke_cutoff = 50
     cell.max_memory = PYSCF_MAX_MEMORY
     cell.build(dump_input=False)
 
@@ -424,18 +438,18 @@ if __name__ == "__main__":
     vj0, vk0 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
     t1 = log.timer("-> FFTDF JK", *t0)
 
-    from pyscf.pbc.df import GDF
-    scf_obj.with_df = GDF(cell, kpts)
-    scf_obj.with_df.build()
-    t1 = log.timer("-> Building GDF", *t1)
-    vj1, vk1 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
-    t1 = log.timer("-> GDF JK", *t1)
+    # from pyscf.pbc.df import GDF
+    # scf_obj.with_df = GDF(cell, kpts)
+    # scf_obj.with_df.build()
+    # t1 = log.timer("-> Building GDF", *t1)
+    # vj1, vk1 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
+    # t1 = log.timer("-> GDF JK", *t1)
 
-    err = abs(vj0 - vj1).max()
-    print("-> GDF vj err = % 6.4e" % err)
+    # err = abs(vj0 - vj1).max()
+    # print("-> GDF vj err = % 6.4e" % err)
 
-    err = abs(vk0 - vk1).max()
-    print("-> GDF vk err = % 6.4e" % err)
+    # err = abs(vk0 - vk1).max()
+    # print("-> GDF vk err = % 6.4e" % err)
 
     scf_obj.with_df = ISDF(cell, kpts=cell.get_kpts(kmesh))
     scf_obj.with_df.verbose = 5
@@ -443,12 +457,12 @@ if __name__ == "__main__":
     scf_obj.with_df.m0 = [15, 15, 15]
     scf_obj.with_df.build()
     t1 = log.timer("-> Building ISDF", *t1)
-    vj2, vk2 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
+    vj1, vk1 = scf_obj.get_jk(dm_kpts=dm_kpts, with_j=True, with_k=True)
     t1 = log.timer("-> ISDF JK", *t1)
 
     c0 = scf_obj.with_df.c0
-    err = abs(vj0 - vj2).max()
+    err = abs(vj0 - vj1).max()
     print("-> ISDF c0 = % 6.4f, vj err = % 6.4e" % (c0, err))
 
-    err = abs(vk0 - vk2).max()
+    err = abs(vk0 - vk1).max()
     print("-> ISDF c0 = % 6.4f, vk err = % 6.4e" % (c0, err))
